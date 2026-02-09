@@ -405,6 +405,27 @@ contract MockUniswapPool is IMockUniswapPool, Ownable, ReentrancyGuard {
         return (pool.reserve0, pool.reserve1);
     }
 
+    /// @inheritdoc IMockUniswapPool
+    function getPositionValue(PoolId id, address provider) 
+        external 
+        view 
+        poolExists(id) 
+        returns (uint256 amount0, uint256 amount1) 
+    {
+        PoolState storage pool = pools[id];
+        LiquidityPosition storage position = positions[id][provider];
+        
+        if (pool.totalLiquidity == 0 || position.liquidity == 0) {
+            return (0, 0);
+        }
+        
+        // Calculate proportional share of reserves
+        // amount0 = (userLiquidity / totalLiquidity) * reserve0
+        // amount1 = (userLiquidity / totalLiquidity) * reserve1
+        amount0 = (position.liquidity * pool.reserve0) / pool.totalLiquidity;
+        amount1 = (position.liquidity * pool.reserve1) / pool.totalLiquidity;
+    }
+
     // ============ Internal Helpers ============
 
     /**

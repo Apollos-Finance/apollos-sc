@@ -212,4 +212,17 @@ interface IMockUniswapPool {
      * @return reserve1 Reserve of currency1
      */
     function getReserves(PoolId id) external view returns (uint256 reserve0, uint256 reserve1);
+
+    /**
+     * @notice Get the actual token values of an LP position
+     * @dev Calculates proportional share of reserves based on LP tokens held
+     * @param id The pool identifier
+     * @param provider Address of the liquidity provider
+     * @return amount0 Value in currency0 (e.g., WETH)
+     * @return amount1 Value in currency1 (e.g., USDC)
+     */
+    function getPositionValue(PoolId id, address provider) 
+        external 
+        view 
+        returns (uint256 amount0, uint256 amount1);
 }

@@ -28,6 +28,7 @@ contract LVRHook is IHooks, Ownable {
 
     // ============ Constants ============
     /// @notice Flag to indicate dynamic fee override (bit 24 = 0x800000)
+    /// @dev MUST match DYNAMIC_FEE_FLAG in MockUniswapPool.sol
     uint24 public constant OVERRIDE_FEE_FLAG = 0x800000;
     
     /// @notice Maximum allowed dynamic fee (50% = 500000 in V4 format)
@@ -35,6 +36,12 @@ contract LVRHook is IHooks, Ownable {
     
     /// @notice Minimum fee during normal conditions (0.05% = 500)
     uint24 public constant MIN_FEE = 500;
+    
+    /// @notice Threshold fee for time-lock fallback (1% = 10000)
+    uint24 public constant HIGH_FEE_THRESHOLD = 10000;
+    
+    /// @notice Time-lock duration before auto-reset (6 hours)
+    uint256 public constant FALLBACK_TIMEOUT = 6 hours;
 
     // ============ State Variables ============
     /// @notice Dynamic fee for each pool (set by Chainlink Workflow)
@@ -104,6 +111,17 @@ contract LVRHook is IHooks, Ownable {
         
         // Get current dynamic fee (set by Chainlink Workflow)
         uint24 currentFee = dynamicFees[poolId];
+        uint256 lastUpdate = lastFeeUpdate[poolId];
+        
+        // TIME-LOCK FALLBACK: If fee is high and stale, auto-reset to MIN_FEE
+        // This prevents the system from being stuck in emergency mode if Workflow dies
+        if (currentFee > HIGH_FEE_THRESHOLD && lastUpdate > 0) {
+            uint256 timeSinceUpdate = block.timestamp - lastUpdate;
+            if (timeSinceUpdate > FALLBACK_TIMEOUT) {
+                // Fee is stale (>6 hours) and high (>1%), reset to minimum
+                currentFee = MIN_FEE;
+            }
+        }
         
         // If no dynamic fee set, use minimum
         if (currentFee == 0) {
