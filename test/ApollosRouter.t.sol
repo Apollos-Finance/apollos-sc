@@ -358,7 +358,8 @@ contract ApollosRouterTest is Test {
             asset: address(weth),
             amount: 10 ether,
             minShares: 0,
-            receiver: alice
+            receiver: alice,
+            targetBaseAsset: address(weth)
         });
         
         vm.expectRevert(IApollosRouter.InvalidChainSelector.selector);

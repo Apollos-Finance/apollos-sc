@@ -13,6 +13,7 @@ remappings = [
     "@openzeppelin/contracts-upgradeable/=lib/openzeppelin-contracts-upgradeable/contracts/",
     "@uniswap/v4-core/=lib/v4-core/",
     "@uniswap/v4-periphery/=lib/v4-periphery/",
+    "@chainlink/contracts-ccip/=lib/ccip/contracts/",
     "forge-std/=lib/forge-std/src/"
 ]
 

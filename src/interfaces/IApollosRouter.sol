@@ -31,11 +31,12 @@ interface IApollosRouter {
     /// @notice Parameters for cross-chain deposit
     struct CrossChainDepositParams {
         uint64 destinationChainSelector;  // CCIP chain selector
-        address destinationRouter;        // Router on destination chain
-        address asset;                    // Asset to deposit
+        address destinationRouter;        // CCIPReceiver on destination chain
+        address asset;                    // Asset to send via CCIP (e.g., USDC)
         uint256 amount;                   // Amount to deposit
         uint256 minShares;                // Minimum shares
         address receiver;                 // Receiver on destination chain
+        address targetBaseAsset;          // Target vault base asset on dest chain (WETH/WBTC/LINK)
     }
 
     // ============ Events ============

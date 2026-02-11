@@ -11,6 +11,7 @@ import {IHooks} from "@uniswap/v4-core/src/interfaces/IHooks.sol";
 // Contracts
 import {MockToken} from "../src/mocks/MockToken.sol";
 import {MockUniswapPool} from "../src/mocks/MockUniswapPool.sol";
+import {MockAavePool} from "../src/mocks/MockAavePool.sol";
 import {LVRHook} from "../src/core/LVRHook.sol";
 
 /**
@@ -26,6 +27,7 @@ contract Deploy is Script {
     MockToken public wbtc;
     
     MockUniswapPool public pool;
+    MockAavePool public aavePool;
     LVRHook public lvrHook;
 
     function run() external virtual {
@@ -72,7 +74,26 @@ contract Deploy is Script {
         console.log("LVRHook deployed at:", address(lvrHook));
         console.log("");
 
-        // ============ Step 4: Initialize Pools ============
+        // ============ Step 4: Deploy MockAavePool ============
+        console.log("--- Deploying MockAavePool ---");
+        aavePool = new MockAavePool();
+        console.log("MockAavePool deployed at:", address(aavePool));
+        
+        // Configure WETH reserve: 75% LTV, 80% liquidation, 5% bonus
+        aavePool.configureReserve(address(weth), 7500, 8000, 10500);
+        console.log("WETH reserve configured");
+        
+        // Configure USDC reserve: 80% LTV, 85% liquidation, 5% bonus
+        aavePool.configureReserve(address(usdc), 8000, 8500, 10500);
+        console.log("USDC reserve configured");
+        
+        // Set initial prices (8 decimals)
+        aavePool.setAssetPrice(address(weth), 2000 * 1e8);  // $2000
+        aavePool.setAssetPrice(address(usdc), 1 * 1e8);     // $1
+        console.log("Asset prices set");
+        console.log("");
+
+        // ============ Step 5: Initialize Pools ============
         console.log("--- Initializing Pools ---");
         
         // Ensure currency0 < currency1 (V4 requirement)
@@ -93,7 +114,7 @@ contract Deploy is Script {
         
         console.log("");
 
-        // ============ Step 5: Configure Permissions ============
+        // ============ Step 6: Configure Permissions ============
         console.log("--- Configuring Permissions ---");
         
         // Pool whitelists LVRHook's vault (placeholder - will be ApollosVault later)
@@ -116,6 +137,7 @@ contract Deploy is Script {
         console.log("MOCK_LINK_ADDRESS=", address(link));
         console.log("MOCK_WBTC_ADDRESS=", address(wbtc));
         console.log("MOCK_UNISWAP_POOL_ADDRESS=", address(pool));
+        console.log("MOCK_AAVE_POOL_ADDRESS=", address(aavePool));
         console.log("LVR_HOOK_ADDRESS=", address(lvrHook));
     }
 }
@@ -140,6 +162,13 @@ contract DeployLocal is Deploy {
         
         pool = new MockUniswapPool();
         lvrHook = new LVRHook(address(pool));
+        
+        // Deploy and configure AavePool
+        aavePool = new MockAavePool();
+        aavePool.configureReserve(address(weth), 7500, 8000, 10500);
+        aavePool.configureReserve(address(usdc), 8000, 8500, 10500);
+        aavePool.setAssetPrice(address(weth), 2000 * 1e8);
+        aavePool.setAssetPrice(address(usdc), 1 * 1e8);
         
         // Initialize WETH/USDC pool
         (address token0, address token1) = address(weth) < address(usdc) 
@@ -171,6 +200,7 @@ contract DeployLocal is Deploy {
         console.log("WETH:", address(weth));
         console.log("USDC:", address(usdc));
         console.log("Pool:", address(pool));
+        console.log("AavePool:", address(aavePool));
         console.log("LVRHook:", address(lvrHook));
     }
 }

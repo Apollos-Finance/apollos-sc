@@ -5,6 +5,8 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {IRouterClient} from "@chainlink/contracts-ccip/src/v0.8/ccip/interfaces/IRouterClient.sol";
+import {Client} from "@chainlink/contracts-ccip/src/v0.8/ccip/libraries/Client.sol";
 
 // Interfaces
 import {IApollosRouter} from "../interfaces/IApollosRouter.sol";
@@ -204,19 +206,59 @@ contract ApollosRouter is IApollosRouter, Ownable, ReentrancyGuard {
         if (params.amount == 0) revert ZeroAmount();
         if (!supportedChains[params.destinationChainSelector]) revert InvalidChainSelector();
         
-        // Transfer tokens from user
+        // 1. Ambil Token dari User ke Kontrak ini
         IERC20(params.asset).safeTransferFrom(msg.sender, address(this), params.amount);
         
-        // TODO: Implement full CCIP integration
-        // For hackathon, emit event for off-chain tracking
-        messageId = keccak256(abi.encodePacked(
+        // 2. Approve Token agar bisa diambil oleh Chainlink Router
+        IERC20(params.asset).safeIncreaseAllowance(ccipRouterAddress, params.amount);
+
+        // 3. Encode deposit data (must match ApollosCCIPReceiver decoding)
+        bytes memory depositData = abi.encode(
+            params.asset,            // source asset address (USDC)
+            params.amount,           // amount to deposit
+            params.minShares,        // minimum shares expected
+            params.receiver,         // receiver of vault shares
+            msg.sender,              // original sender
+            params.targetBaseAsset   // target vault base asset (WETH/WBTC/LINK on dest chain)
+        );
+
+        // 4. Build CCIP message
+        Client.EVMTokenAmount[] memory tokenAmounts = new Client.EVMTokenAmount[](1);
+        tokenAmounts[0] = Client.EVMTokenAmount({
+            token: params.asset,
+            amount: params.amount
+        });
+
+        Client.EVM2AnyMessage memory evm2AnyMessage = Client.EVM2AnyMessage({
+            receiver: abi.encode(params.destinationRouter),
+            data: depositData,
+            tokenAmounts: tokenAmounts,
+            extraArgs: Client._argsToBytes(
+                Client.EVMExtraArgsV1({gasLimit: 500_000})
+            ),
+            feeToken: address(0) // Pay fee in native ETH
+        });
+
+        // 5. Calculate CCIP fee
+        uint256 fees = IRouterClient(ccipRouterAddress).getFee(
             params.destinationChainSelector,
-            params.receiver,
-            params.asset,
-            params.amount,
-            block.timestamp
-        ));
-        
+            evm2AnyMessage
+        );
+
+        if (msg.value < fees) revert InsufficientFee();
+
+        // 5. KIRIM KE CHAINLINK ROUTER (The Real Action)
+        messageId = IRouterClient(ccipRouterAddress).ccipSend{value: fees}(
+            params.destinationChainSelector,
+            evm2AnyMessage
+        );
+
+        // 6. Kembalikan sisa ETH (jika ada kembalian fee)
+        if (msg.value > fees) {
+            (bool success, ) = msg.sender.call{value: msg.value - fees}("");
+            require(success, "Refund failed");
+        }
+
         emit CrossChainDepositInitiated(
             messageId,
             params.destinationChainSelector,
@@ -230,13 +272,30 @@ contract ApollosRouter is IApollosRouter, Ownable, ReentrancyGuard {
      * @notice Get CCIP fee estimate
      */
     function getCrossChainFee(
-        uint64 /* destinationChainSelector */,
-        address /* asset */,
-        uint256 /* amount */
-    ) external pure override returns (uint256 fee) {
-        // Simplified: return fixed estimate
-        // In production: query CCIP Router for actual fee
-        return 0.01 ether;
+        uint64 destinationChainSelector,
+        address asset,
+        uint256 amount
+    ) external view override returns (uint256 fee) {
+        if (ccipRouterAddress == address(0)) return 0;
+        
+        // Build message to estimate fee
+        Client.EVMTokenAmount[] memory tokenAmounts = new Client.EVMTokenAmount[](1);
+        tokenAmounts[0] = Client.EVMTokenAmount({token: asset, amount: amount});
+        
+        Client.EVM2AnyMessage memory message = Client.EVM2AnyMessage({
+            receiver: abi.encode(address(0)),
+            data: "",
+            tokenAmounts: tokenAmounts,
+            extraArgs: Client._argsToBytes(
+                Client.EVMExtraArgsV1({gasLimit: 500_000})
+            ),
+            feeToken: address(0)
+        });
+        
+        fee = IRouterClient(ccipRouterAddress).getFee(
+            destinationChainSelector,
+            message
+        );
     }
 
     // ============ View Functions ============
