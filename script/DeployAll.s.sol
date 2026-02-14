@@ -296,7 +296,7 @@ contract DeployAll is Script {
             // Whitelist vault in MockAavePool (Credit Delegation)
             aavePool.setWhitelistedBorrower(vault, true);
             
-            // Set credit limit (1M USDC each vault)
+            // Set optional hard cap (delegation still required)
             aavePool.setCreditLimit(vault, address(usdc), 1_000_000 * 1e6);
             
             // Authorize deployer as rebalancer (for Chainlink Workflow)
@@ -322,9 +322,21 @@ contract DeployAll is Script {
         usdc.mintTo(deployer, 500_000 * 1e6);     // 500k MockUSDC
         console.log("Minted tokens to deployer");
         
-        // Seed MockAavePool with MockUSDC for vault borrowing (3M total)
-        usdc.mintTo(address(aavePool), 3_000_000 * 1e6);
-        console.log("Seeded AavePool with 3M MockUSDC for borrowing");
+        // Investor-style flow:
+        // Deployer mints investor USDC, supplies it to Aave, then delegates all to Apollos vaults.
+        uint256 investorUsdc = 3_000_000 * 1e6;
+        address[3] memory vaults = [wethVault, wbtcVault, linkVault];
+        uint256 delegationPerVault = investorUsdc / vaults.length;
+
+        usdc.mintTo(deployer, investorUsdc);
+        usdc.approve(address(aavePool), investorUsdc);
+        aavePool.supply(address(usdc), investorUsdc, deployer, 0);
+
+        for (uint256 i = 0; i < vaults.length; i++) {
+            aavePool.setCreditDelegation(vaults[i], address(usdc), delegationPerVault);
+        }
+
+        console.log("Deployer supplied investor USDC and delegated all to vaults");
         
         // Seed MockUniswapPool with initial liquidity for all pairs
         // This is needed so vaults can add liquidity and swaps can work

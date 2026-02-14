@@ -90,6 +90,9 @@ interface IMockAavePool {
     error NothingToRepay();
     error NothingToWithdraw();
     error NotLiquidatable();
+    error NotWhitelistedBorrower();
+    error DelegationExceedsSuppliedBalance();
+    error DelegationBelowOutstandingDebt();
     error ZeroAddress();
 
     // ============ Core Functions ============
@@ -263,6 +266,16 @@ interface IMockAavePool {
     function setCreditLimit(address borrower, address asset, uint256 limit) external;
 
     /**
+     * @notice Set credit delegation allowance for a whitelisted borrower
+     * @dev Delegation is capped by delegator's supplied balance for the same asset.
+     *      Calling again with a different amount increases or decreases allowance.
+     * @param borrower The whitelisted borrower (e.g. ApollosVault)
+     * @param asset The delegated borrow asset
+     * @param amount Total delegated allowance amount
+     */
+    function setCreditDelegation(address borrower, address asset, uint256 amount) external;
+
+    /**
      * @notice Check if an address is a whitelisted borrower
      * @param borrower The address to check
      * @return True if whitelisted
@@ -276,4 +289,29 @@ interface IMockAavePool {
      * @return limit Credit limit amount
      */
     function getCreditLimit(address borrower, address asset) external view returns (uint256 limit);
+
+    /**
+     * @notice Get delegation amount from a specific delegator to borrower
+     */
+    function getCreditDelegation(
+        address delegator,
+        address borrower,
+        address asset
+    ) external view returns (uint256 delegatedAmount);
+
+    /**
+     * @notice Get total delegated credit to a borrower for an asset
+     */
+    function getTotalDelegatedToBorrower(
+        address borrower,
+        address asset
+    ) external view returns (uint256 delegatedAmount);
+
+    /**
+     * @notice Get total delegated amount by a delegator for an asset
+     */
+    function getTotalDelegatedBy(
+        address delegator,
+        address asset
+    ) external view returns (uint256 delegatedAmount);
 }

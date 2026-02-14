@@ -111,12 +111,15 @@ contract ApollosRouterTest is Test {
         lvrHook.setWhitelistedVault(address(vault), true);
         aavePool.setWhitelistedBorrower(address(vault), true);
         aavePool.setCreditLimit(address(vault), address(usdc), 10_000_000 * 1e6);
+        usdc.mintTo(owner, 10_000_000 * 1e6);
+        usdc.approve(address(aavePool), 10_000_000 * 1e6);
+        aavePool.supply(address(usdc), 10_000_000 * 1e6, owner, 0);
+        aavePool.setCreditDelegation(address(vault), address(usdc), 10_000_000 * 1e6);
         
         // Set router asset mapping
         router.setAssetVault(address(weth), address(vault));
         
-        // Seed liquidity
-        usdc.mintTo(address(aavePool), 10_000_000 * 1e6);
+        // Aave liquidity is supplied above by investor-style flow
         _seedInitialLiquidity();
         
         // Fund users
@@ -345,7 +348,7 @@ contract ApollosRouterTest is Test {
 
     function test_GetCrossChainFee() public view {
         uint256 fee = router.getCrossChainFee(1, address(weth), 10 ether);
-        assertEq(fee, 0.01 ether, "Should return fixed fee");
+        assertEq(fee, 0, "Should return 0 when CCIP router is not configured");
     }
 
     function test_DepositCrossChain_RevertInvalidChain() public {

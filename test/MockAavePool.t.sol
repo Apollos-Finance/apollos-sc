@@ -19,6 +19,7 @@ contract MockAavePoolTest is Test {
     
     address public owner = makeAddr("owner");
     address public vault = makeAddr("vault");
+    address public investor = makeAddr("investor");
     address public liquidator = makeAddr("liquidator");
     
     // Prices in USD with 8 decimals
@@ -56,6 +57,7 @@ contract MockAavePoolTest is Test {
         // Mint tokens for testing
         weth.mintTo(vault, 100 ether);
         usdc.mintTo(vault, 100_000 * 1e6);
+        usdc.mintTo(investor, 1_000_000 * 1e6);
         usdc.mintTo(liquidator, 100_000 * 1e6);
     }
 
@@ -123,6 +125,71 @@ contract MockAavePoolTest is Test {
         vm.expectRevert(IMockAavePool.InsufficientCollateral.selector);
         aavePool.borrow(address(usdc), tooMuch, 2, 0, vault);
         
+        vm.stopPrank();
+    }
+
+    function test_BorrowWithDelegatedCredit() public {
+        vm.prank(owner);
+        aavePool.setWhitelistedBorrower(vault, true);
+
+        vm.startPrank(investor);
+        usdc.approve(address(aavePool), 50_000 * 1e6);
+        aavePool.supply(address(usdc), 50_000 * 1e6, investor, 0);
+        aavePool.setCreditDelegation(vault, address(usdc), 40_000 * 1e6);
+        vm.stopPrank();
+
+        vm.prank(vault);
+        aavePool.borrow(address(usdc), 30_000 * 1e6, 2, 0, vault);
+
+        assertEq(aavePool.getUserDebt(vault, address(usdc)), 30_000 * 1e6);
+    }
+
+    function test_CannotDelegateBeyondSuppliedBalance() public {
+        vm.prank(owner);
+        aavePool.setWhitelistedBorrower(vault, true);
+
+        vm.startPrank(investor);
+        usdc.approve(address(aavePool), 10_000 * 1e6);
+        aavePool.supply(address(usdc), 10_000 * 1e6, investor, 0);
+
+        vm.expectRevert(IMockAavePool.DelegationExceedsSuppliedBalance.selector);
+        aavePool.setCreditDelegation(vault, address(usdc), 10_001 * 1e6);
+        vm.stopPrank();
+    }
+
+    function test_DelegationCanBeReducedButNotBelowDebt() public {
+        vm.prank(owner);
+        aavePool.setWhitelistedBorrower(vault, true);
+
+        vm.startPrank(investor);
+        usdc.approve(address(aavePool), 50_000 * 1e6);
+        aavePool.supply(address(usdc), 50_000 * 1e6, investor, 0);
+        aavePool.setCreditDelegation(vault, address(usdc), 40_000 * 1e6);
+        vm.stopPrank();
+
+        vm.prank(vault);
+        aavePool.borrow(address(usdc), 25_000 * 1e6, 2, 0, vault);
+
+        vm.prank(investor);
+        aavePool.setCreditDelegation(vault, address(usdc), 30_000 * 1e6);
+
+        vm.startPrank(investor);
+        vm.expectRevert(IMockAavePool.DelegationBelowOutstandingDebt.selector);
+        aavePool.setCreditDelegation(vault, address(usdc), 20_000 * 1e6);
+        vm.stopPrank();
+    }
+
+    function test_CannotWithdrawDelegatedBackingWithoutReducingDelegation() public {
+        vm.prank(owner);
+        aavePool.setWhitelistedBorrower(vault, true);
+
+        vm.startPrank(investor);
+        usdc.approve(address(aavePool), 10_000 * 1e6);
+        aavePool.supply(address(usdc), 10_000 * 1e6, investor, 0);
+        aavePool.setCreditDelegation(vault, address(usdc), 8_000 * 1e6);
+
+        vm.expectRevert(IMockAavePool.DelegationExceedsSuppliedBalance.selector);
+        aavePool.withdraw(address(usdc), 3_000 * 1e6, investor);
         vm.stopPrank();
     }
 

@@ -110,8 +110,11 @@ contract ApollosVaultTest is Test {
         aavePool.setCreditLimit(address(vault), address(usdc), 10_000_000 * 1e6);
         vault.setRebalancer(rebalancer, true);
         
-        // Seed liquidity
-        usdc.mintTo(address(aavePool), 10_000_000 * 1e6);
+        // Investor supplies quote asset and delegates to vault
+        usdc.mintTo(owner, 10_000_000 * 1e6);
+        usdc.approve(address(aavePool), 10_000_000 * 1e6);
+        aavePool.supply(address(usdc), 10_000_000 * 1e6, owner, 0);
+        aavePool.setCreditDelegation(address(vault), address(usdc), 10_000_000 * 1e6);
         
         // Fund users
         weth.mintTo(alice, INITIAL_WETH);
@@ -207,8 +210,11 @@ contract ApollosVaultTest is Test {
         aavePool.setWhitelistedBorrower(freshVaultAddr, true);
         aavePool.setCreditLimit(freshVaultAddr, address(newUsdc), 10_000_000 * 1e6);
         
-        // Seed aave with new usdc
-        newUsdc.mintTo(address(aavePool), 10_000_000 * 1e6);
+        // Supply and delegate new USDC backing for fresh vault
+        newUsdc.mintTo(owner, 10_000_000 * 1e6);
+        newUsdc.approve(address(aavePool), 10_000_000 * 1e6);
+        aavePool.supply(address(newUsdc), 10_000_000 * 1e6, owner, 0);
+        aavePool.setCreditDelegation(freshVaultAddr, address(newUsdc), 10_000_000 * 1e6);
         
         // Mint tokens to alice
         newWeth.mintTo(alice, 100 ether);

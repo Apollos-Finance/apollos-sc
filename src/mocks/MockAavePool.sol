@@ -71,6 +71,15 @@ contract MockAavePool is IMockAavePool, Ownable, ReentrancyGuard {
     
     /// @notice Credit limit per whitelisted borrower per asset
     mapping(address => mapping(address => uint256)) public creditLimits;
+
+    /// @notice Delegation allowance: delegator => borrower => asset => amount
+    mapping(address => mapping(address => mapping(address => uint256))) public creditDelegations;
+
+    /// @notice Total delegated amount by delegator per asset
+    mapping(address => mapping(address => uint256)) public totalDelegatedBy;
+
+    /// @notice Total delegated amount to borrower per asset
+    mapping(address => mapping(address => uint256)) public totalDelegatedToBorrower;
     
     /// @notice Virtual collateral for whitelisted borrowers (LP tokens locked in vault)
     mapping(address => uint256) public virtualCollateral;
@@ -78,6 +87,13 @@ contract MockAavePool is IMockAavePool, Ownable, ReentrancyGuard {
     // ============ Events for Credit Delegation ============
     event BorrowerWhitelisted(address indexed borrower, bool status);
     event CreditLimitSet(address indexed borrower, address indexed asset, uint256 limit);
+    event CreditDelegationUpdated(
+        address indexed delegator,
+        address indexed borrower,
+        address indexed asset,
+        uint256 oldAmount,
+        uint256 newAmount
+    );
     event VirtualCollateralUpdated(address indexed borrower, uint256 amount);
 
     // ============ Constructor ============
@@ -126,6 +142,10 @@ contract MockAavePool is IMockAavePool, Ownable, ReentrancyGuard {
         // Handle max withdrawal
         uint256 amountToWithdraw = amount == type(uint256).max ? userBalance : amount;
         if (amountToWithdraw > userBalance) revert InvalidAmount();
+
+        // Keep delegator's pledged backing locked unless delegation is reduced first
+        uint256 delegatedAmount = totalDelegatedBy[msg.sender][asset];
+        if (userBalance - amountToWithdraw < delegatedAmount) revert DelegationExceedsSuppliedBalance();
         
         // Update balance first (checks-effects-interactions)
         userCollateral[msg.sender][asset] -= amountToWithdraw;
@@ -167,7 +187,7 @@ contract MockAavePool is IMockAavePool, Ownable, ReentrancyGuard {
         if (whitelistedBorrowers[onBehalfOf]) {
             // Check against credit limit instead of collateral
             uint256 currentDebt = userDebt[onBehalfOf][asset];
-            uint256 limit = creditLimits[onBehalfOf][asset];
+            uint256 limit = _getEffectiveCreditLimit(onBehalfOf, asset);
             if (currentDebt + amount > limit) revert InsufficientCollateral();
         } else {
             // Standard collateralized borrow
@@ -448,7 +468,10 @@ contract MockAavePool is IMockAavePool, Ownable, ReentrancyGuard {
     }
 
     /**
-     * @notice Set credit limit for a whitelisted borrower
+     * @notice Set optional protocol hard cap for borrower credit
+     * @dev Effective borrow limit for whitelisted borrowers is:
+     *      min(total delegated credit, protocol hard cap) when hard cap > 0
+     *      total delegated credit when hard cap == 0
      * @param borrower The whitelisted borrower address
      * @param asset The asset they can borrow
      * @param limit Maximum amount they can borrow
@@ -458,9 +481,53 @@ contract MockAavePool is IMockAavePool, Ownable, ReentrancyGuard {
         address asset,
         uint256 limit
     ) external onlyOwner {
-        if (borrower == address(0)) revert ZeroAddress();
+        if (borrower == address(0) || asset == address(0)) revert ZeroAddress();
         creditLimits[borrower][asset] = limit;
         emit CreditLimitSet(borrower, asset, limit);
+    }
+
+    /**
+     * @notice Set delegated borrow allowance from msg.sender to whitelisted borrower
+     * @dev Delegation can be increased up to supplier's deposited balance of the asset.
+     *      Delegation can be reduced as long as it does not go below borrower's current debt.
+     */
+    function setCreditDelegation(
+        address borrower,
+        address asset,
+        uint256 amount
+    ) external override nonReentrant {
+        if (borrower == address(0) || asset == address(0)) revert ZeroAddress();
+        if (!whitelistedBorrowers[borrower]) revert NotWhitelistedBorrower();
+        if (!reserveConfigs[asset].isActive) revert ReserveNotActive();
+
+        uint256 currentAmount = creditDelegations[msg.sender][borrower][asset];
+        if (currentAmount == amount) return;
+
+        if (amount > currentAmount) {
+            uint256 increase = amount - currentAmount;
+            uint256 suppliedBalance = userCollateral[msg.sender][asset];
+            uint256 delegatedByUser = totalDelegatedBy[msg.sender][asset];
+
+            if (delegatedByUser + increase > suppliedBalance) {
+                revert DelegationExceedsSuppliedBalance();
+            }
+
+            totalDelegatedBy[msg.sender][asset] = delegatedByUser + increase;
+            totalDelegatedToBorrower[borrower][asset] += increase;
+        } else {
+            uint256 decrease = currentAmount - amount;
+            uint256 newBorrowerDelegation = totalDelegatedToBorrower[borrower][asset] - decrease;
+
+            if (userDebt[borrower][asset] > newBorrowerDelegation) {
+                revert DelegationBelowOutstandingDebt();
+            }
+
+            totalDelegatedBy[msg.sender][asset] -= decrease;
+            totalDelegatedToBorrower[borrower][asset] = newBorrowerDelegation;
+        }
+
+        creditDelegations[msg.sender][borrower][asset] = amount;
+        emit CreditDelegationUpdated(msg.sender, borrower, asset, currentAmount, amount);
     }
 
     /**
@@ -487,7 +554,50 @@ contract MockAavePool is IMockAavePool, Ownable, ReentrancyGuard {
         return creditLimits[borrower][asset];
     }
 
+    /**
+     * @notice Get delegation from a specific delegator to borrower
+     */
+    function getCreditDelegation(
+        address delegator,
+        address borrower,
+        address asset
+    ) external view override returns (uint256) {
+        return creditDelegations[delegator][borrower][asset];
+    }
+
+    /**
+     * @notice Get aggregate delegated credit available to borrower
+     */
+    function getTotalDelegatedToBorrower(
+        address borrower,
+        address asset
+    ) external view override returns (uint256) {
+        return totalDelegatedToBorrower[borrower][asset];
+    }
+
+    /**
+     * @notice Get aggregate delegated credit set by delegator
+     */
+    function getTotalDelegatedBy(
+        address delegator,
+        address asset
+    ) external view override returns (uint256) {
+        return totalDelegatedBy[delegator][asset];
+    }
+
     // ============ Internal Functions ============
+
+    /**
+     * @notice Get effective credit limit for whitelisted borrower
+     * @dev Delegated credit is the primary limit. Protocol hard cap is optional.
+     */
+    function _getEffectiveCreditLimit(address borrower, address asset) internal view returns (uint256) {
+        uint256 delegatedLimit = totalDelegatedToBorrower[borrower][asset];
+        uint256 hardCap = creditLimits[borrower][asset];
+
+        if (hardCap == 0) return delegatedLimit;
+        return delegatedLimit < hardCap ? delegatedLimit : hardCap;
+    }
 
     /**
      * @notice Calculate health factor for a user
