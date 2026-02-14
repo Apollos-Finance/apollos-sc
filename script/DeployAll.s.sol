@@ -478,7 +478,7 @@ contract DeploySourceChain is Script {
         sourceRouter.setSupportedAsset(USDC_BASE_SEPOLIA, true);
         
         // Note: destinationReceiver must be set after CCIPReceiver is deployed on Arbitrum
-        // sourceRouter.setDestinationReceiver(CCIP_RECEIVER_ADDRESS_ON_ARBITRUM);
+        sourceRouter.setDestinationReceiver(CCIP_RECEIVER_ADDRESS_ON_ARBITRUM);
         
         vm.stopBroadcast();
         
