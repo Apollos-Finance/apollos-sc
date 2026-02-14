@@ -18,6 +18,7 @@ import {ApollosVault} from "../src/core/ApollosVault.sol";
 import {ApollosRouter} from "../src/core/ApollosRouter.sol";
 import {ApollosCCIPReceiver} from "../src/core/ApollosCCIPReceiver.sol";
 import {IApollosFactory} from "../src/interfaces/IApollosFactory.sol";
+import {SourceChainRouter} from "../src/core/SourceChainRouter.sol";
 
 /**
  * @title DeployAll
