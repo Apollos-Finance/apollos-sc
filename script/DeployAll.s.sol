@@ -140,8 +140,8 @@ contract DeployAll is Script {
         
         // Set asset prices (8 decimals, USD denominated)
         aavePool.setAssetPrice(address(weth), 2000 * 1e8);   // $2,000/ETH
-        aavePool.setAssetPrice(address(wbtc), 42000 * 1e8);  // $42,000/BTC
-        aavePool.setAssetPrice(address(link), 15 * 1e8);     // $15/LINK
+        aavePool.setAssetPrice(address(wbtc), 70000 * 1e8);  // $70,000/BTC
+        aavePool.setAssetPrice(address(link), 9 * 1e8);      // $9/LINK
         aavePool.setAssetPrice(address(usdc), 1 * 1e8);      // $1/USDC
         
         console.log("Aave reserves & prices configured");
@@ -347,6 +347,7 @@ contract DeployAll is Script {
 
         // Whitelist deployer temporarily for seeding
         uniswapPool.setWhitelistedVault(deployer, true);
+        lvrHook.setWhitelistedVault(deployer, true);
         
         // Seed WETH/USDC pool: 10 WETH + 20,000 USDC ($2,000/ETH)
         {
@@ -355,22 +356,23 @@ contract DeployAll is Script {
         }
         console.log("Seeded WETH/USDC pool");
         
-        // Seed WBTC/USDC pool: 0.5 WBTC + 21,000 USDC ($42,000/BTC)
+        // Seed WBTC/USDC pool: 0.5 WBTC + 35,000 USDC ($70,000/BTC)
         {
-            (uint256 a0, uint256 a1) = _sortAmounts(address(wbtc), 0.5e8, 21_000 * 1e6);
+            (uint256 a0, uint256 a1) = _sortAmounts(address(wbtc), 0.5e8, 35_000 * 1e6);
             uniswapPool.addLiquidity(wbtcPoolKey, a0, a1, 0, 0);
         }
         console.log("Seeded WBTC/USDC pool");
         
-        // Seed LINK/USDC pool: 2000 LINK + 30,000 USDC ($15/LINK)
+        // Seed LINK/USDC pool: 2000 LINK + 18,000 USDC ($9/LINK)
         {
-            (uint256 a0, uint256 a1) = _sortAmounts(address(link), 2000 ether, 30_000 * 1e6);
+            (uint256 a0, uint256 a1) = _sortAmounts(address(link), 2000 ether, 18_000 * 1e6);
             uniswapPool.addLiquidity(linkPoolKey, a0, a1, 0, 0);
         }
         console.log("Seeded LINK/USDC pool");
         
         // Remove deployer whitelist (optional)
         // uniswapPool.setWhitelistedVault(deployer, false);
+        // lvrHook.setWhitelistedVault(deployer, false);
     }
     
     /**
@@ -430,37 +432,6 @@ contract DeployAll is Script {
         console.log("UNISWAP_POOL_ADDRESS=", address(uniswapPool));
         console.log("AAVE_POOL_ADDRESS=", address(aavePool));
         console.log("LVR_HOOK_ADDRESS=", address(lvrHook));
-    }
-}
-
-/**
- * @title DeployAllLocal
- * @notice Local deployment for Anvil testing
- * @dev Run: anvil & forge script script/DeployAll.s.sol:DeployAllLocal --fork-url http://localhost:8545 --broadcast
- */
-contract DeployAllLocal is DeployAll {
-    function run() external override {
-        // Use Anvil's default private key
-        uint256 deployerPrivateKey = 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80;
-        address deployer = vm.addr(deployerPrivateKey);
-        
-        console.log("=== LOCAL DEPLOYMENT (Anvil) ===");
-        console.log("Deployer:", deployer);
-        
-        vm.startBroadcast(deployerPrivateKey);
-        
-        _deployTokens();
-        _deployInfrastructure();
-        _deployFactory();
-        _deployVaults();
-        _deployRouter();
-        _deployCCIPReceiver();
-        _configurePermissions(deployer);
-        _seedLiquidity(deployer);
-        
-        vm.stopBroadcast();
-        
-        _printSummary();
     }
 }
 
