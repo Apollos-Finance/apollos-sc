@@ -372,7 +372,6 @@ contract DeployAll is Script {
         
         // Remove deployer whitelist (optional)
         // uniswapPool.setWhitelistedVault(deployer, false);
-        // lvrHook.setWhitelistedVault(deployer, false);
     }
     
     /**
@@ -437,14 +436,14 @@ contract DeployAll is Script {
 
 /**
  * @title DeploySourceChain
- * @notice Deploy ApollosRouter only on source chains (Base Sepolia, etc.)
+ * @notice Deploy SourceChainRouter on source chains (Base Sepolia, etc.)
  * @dev This is the lightweight deployment for chains that send cross-chain deposits
  *      Run: forge script script/DeployAll.s.sol:DeploySourceChain --rpc-url base_sepolia --broadcast
  *
  * After deployment:
  *      1. Set the CCIPReceiver address on Arbitrum as the destination
  *      2. Enable Arbitrum chain selector as supported
- *      3. Users can call router.depositCrossChain() to deposit via CCIP
+ *      3. Users can call sourceRouter.bridgeToArbitrum() to deposit via CCIP
  */
 contract DeploySourceChain is Script {
     // Arbitrum Sepolia chain selector for CCIP
@@ -452,6 +451,9 @@ contract DeploySourceChain is Script {
     
     // CCIP Router on Base Sepolia
     address constant CCIP_ROUTER_BASE_SEPOLIA = 0xD3b06cEbF099CE7DA4AcCf578aaebFDBd6e88a93;
+    
+    // Base Sepolia USDC (official testnet USDC)
+    address constant USDC_BASE_SEPOLIA = 0x036CbD53842c5426634e7929541eC2318f3dCF7e;
     
     function run() external {
         uint256 deployerPrivateKey = vm.envUint("PRIVATE_KEY");
@@ -463,27 +465,31 @@ contract DeploySourceChain is Script {
         
         vm.startBroadcast(deployerPrivateKey);
         
-        // On source chain, we don't have a factory — Router works standalone
-        // We pass address(0) for factory since source chain Router only does cross-chain sends
-        ApollosRouter sourceRouter = new ApollosRouter(
-            address(0),                    // No factory on source chain  
-            address(0),                    // No WETH wrapping needed on source chain
-            CCIP_ROUTER_BASE_SEPOLIA,      // Chainlink CCIP Router on this chain
-            address(0)                     // No quote asset on source chain
+        // Deploy lightweight SourceChainRouter (no factory, no WETH)
+        SourceChainRouter sourceRouter = new SourceChainRouter(
+            CCIP_ROUTER_BASE_SEPOLIA
         );
         
-        // Enable Arbitrum as destination
+        // Configure: Set Arbitrum chain selector as supported
         sourceRouter.setSupportedChain(ARB_SEPOLIA_CHAIN_SELECTOR, true);
+        
+        // Configure: Set USDC as supported asset
+        sourceRouter.setSupportedAsset(USDC_BASE_SEPOLIA, true);
+        
+        // Note: destinationReceiver must be set after CCIPReceiver is deployed on Arbitrum
+        // sourceRouter.setDestinationReceiver(CCIP_RECEIVER_ADDRESS_ON_ARBITRUM);
         
         vm.stopBroadcast();
         
         console.log("");
         console.log("=== SOURCE CHAIN DEPLOYMENT COMPLETE ===");
-        console.log("ApollosRouter:", address(sourceRouter));
+        console.log("SourceChainRouter:", address(sourceRouter));
+        console.log("Supported Asset (USDC):", USDC_BASE_SEPOLIA);
         console.log("");
         console.log("--- Next Steps ---");
-        console.log("1. On Arbitrum: ccipReceiver.setAuthorizedSource(BASE_SELECTOR, sourceRouter, true)");
-        console.log("2. On Arbitrum: ccipReceiver.setAssetMapping(USDC_BASE, USDC_ARB_REAL)");
-        console.log("3. Frontend: set SOURCE_ROUTER_ADDRESS=", address(sourceRouter));
+        console.log("1. Deploy CCIPReceiver on Arbitrum (if not already deployed)");
+        console.log("2. Call: sourceRouter.setDestinationReceiver(CCIP_RECEIVER_ADDRESS)");
+        console.log("3. On Arbitrum: ccipReceiver.setAuthorizedSource(BASE_SELECTOR, sourceRouter, true)");
+        console.log("4. Frontend: set SOURCE_ROUTER_ADDRESS=", address(sourceRouter));
     }
 }
