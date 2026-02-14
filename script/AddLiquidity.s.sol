@@ -72,13 +72,13 @@ contract AddLiquidity is Script {
     }
     
     function _loadContracts() internal {
-        uniswapPool = MockUniswapPool(vm.envAddress("NEXT_PUBLIC_UNISWAP_POOL_ADDRESS"));
-        lvrHook = LVRHook(vm.envAddress("NEXT_PUBLIC_LVR_HOOK_ADDRESS"));
+        uniswapPool = MockUniswapPool(vm.envAddress("UNISWAP_POOL_ADDRESS"));
+        lvrHook = LVRHook(vm.envAddress("LVR_HOOK_ADDRESS"));
         
-        weth = MockToken(vm.envAddress("NEXT_PUBLIC_WETH_ADDRESS"));
-        wbtc = MockToken(vm.envAddress("NEXT_PUBLIC_WBTC_ADDRESS"));
-        link = MockToken(vm.envAddress("NEXT_PUBLIC_LINK_ADDRESS"));
-        usdc = MockToken(vm.envAddress("NEXT_PUBLIC_USDC_ADDRESS"));
+        weth = MockToken(payable(vm.envAddress("WETH_ADDRESS")));
+        wbtc = MockToken(payable(vm.envAddress("WBTC_ADDRESS")));
+        link = MockToken(payable(vm.envAddress("LINK_ADDRESS")));
+        usdc = MockToken(payable(vm.envAddress("USDC_ADDRESS")));
         
         console.log("Loaded Uniswap Pool:", address(uniswapPool));
     }
