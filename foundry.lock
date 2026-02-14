@@ -1,8 +1,8 @@
 {
   "lib\\ccip": {
     "tag": {
-      "name": "v2.9.0",
-      "rev": "065ef85b5fa52bb4583ebad9e51c20a977b64e7a"
+      "name": "contracts-ccip/v1.5.1-beta.2",
+      "rev": "478f0e5c44d2ba578f36e351cc332c4e6c7a9daa"
     }
   },
   "lib\\forge-std": {
