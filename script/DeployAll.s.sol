@@ -34,9 +34,9 @@ import {SourceChainRouter} from "../src/core/SourceChainRouter.sol";
  *      8. Seed Liquidity
  *
  * Cross-chain architecture:
- *      - Source chains (Base, Lisk): Deploy ApollosRouter only (see DeploySourceChain)
+ *      - Source chains (Base): Deploy SourceChainRouter only (see DeploySourceChain)
  *      - Destination chain (Arbitrum): Deploy everything (this script)
- *      - CCIP delivers real USDC → CCIPReceiver mints MockUSDC 1:1 → swap → vault
+ *      - CCIP delivers CCIP-BnM → CCIPReceiver mints MockUSDC 10x → swap → vault
  */
 contract DeployAll is Script {
     // ============ Deployed Contracts ============
@@ -71,6 +71,10 @@ contract DeployAll is Script {
     
     // Base Sepolia chain selector for CCIP
     uint64 constant BASE_SEPOLIA_CHAIN_SELECTOR = 10344971235874465080;
+
+    // Map CCIP-BnM (Arbitrum) → MockUSDC for 10x conversion
+    address constant CCIP_BNM_BASE_SEPOLIA = 0x88A2d74F47a237a62e7A51cdDa67270CE381555e;
+    address constant CCIP_BNM_ARB_SEPOLIA  = 0xA8C0c11bf64AF62CDCA6f93D3769B88BdD7cb93D;
 
     function run() external virtual {
         uint256 deployerPrivateKey = vm.envUint("PRIVATE_KEY");
@@ -250,12 +254,12 @@ contract DeployAll is Script {
         console.log("--- Step 6: Deploy CCIPReceiver ---");
         
         // Deploy CCIPReceiver with Auto-Zapping support
-        // Constructor: ccipRouter, factory, quoteAsset(real USDC), mockQuoteAsset(MockUSDC), swapPool
+        // Constructor: ccipRouter, factory, quoteAsset(CCIP-BnM), mockQuoteAsset(MockUSDC), swapPool
         ccipReceiver = new ApollosCCIPReceiver(
             CCIP_ROUTER_ARB_SEPOLIA,     // Chainlink CCIP Router on Arbitrum
             address(factory),             // ApollosFactory for vault lookups
-            address(0),                   // quoteAsset: real USDC on Arb Sepolia (set later via setQuoteAsset)
-            address(usdc),                // mockQuoteAsset: MockUSDC for 1:1 bridge mint
+            address(0),                   // quoteAsset: CCIP-BnM on Arb Sepolia (set later if needed)
+            address(usdc),                // mockQuoteAsset: MockUSDC for 10x bridge mint (1 CCIP-BnM = 10 MockUSDC)
             address(uniswapPool)          // MockUniswapPool for auto-zap swaps
         );
         console.log("ApollosCCIPReceiver:", address(ccipReceiver));
@@ -264,6 +268,10 @@ contract DeployAll is Script {
         ccipReceiver.setAssetVault(address(weth), wethVault);
         ccipReceiver.setAssetVault(address(wbtc), wbtcVault);
         ccipReceiver.setAssetVault(address(link), linkVault);
+        ccipReceiver.setAssetMapping(
+            CCIP_BNM_BASE_SEPOLIA, // Key: Alamat di Base (Source)
+            CCIP_BNM_ARB_SEPOLIA   // Value: Alamat di Arbitrum (Fisik yang diterima)
+        );
         console.log("CCIPReceiver: asset-vault mappings set");
         
         // --- Configure swap routes (MockUSDC → target base asset) ---
@@ -346,45 +354,52 @@ contract DeployAll is Script {
     }
     
     function _seedPoolLiquidity(address deployer) internal {
-        // Mint extra tokens for pool seeding
-        weth.mintTo(deployer, 50 ether);
-        wbtc.mintTo(deployer, 2 * 1e8);
-        link.mintTo(deployer, 5000 ether);
-        usdc.mintTo(deployer, 300_000 * 1e6);
+        console.log("--- Seeding $1M TVL per Pool ---");
+
+        // 1. UPDATE MINTING: Pastikan saldo deployer cukup untuk $1.5 Juta USDC + Aset
+        // WETH: Butuh 250, kita mint 300 biar aman
+        weth.mintTo(deployer, 300 ether);
+        // WBTC: Butuh 7.15, kita mint 10 (Ingat WBTC desimal 8)
+        wbtc.mintTo(deployer, 10 * 1e8);
+        // LINK: Butuh 55k, kita mint 60k
+        link.mintTo(deployer, 60_000 ether);
+        // USDC: Butuh 500k * 3 pool = 1.5 Juta, kita mint 2 Juta
+        usdc.mintTo(deployer, 2_000_000 * 1e6);
         
-        // Approve MockUniswapPool
+        // Approve MockUniswapPool (Sama seperti sebelumnya)
         weth.approve(address(uniswapPool), type(uint256).max);
         wbtc.approve(address(uniswapPool), type(uint256).max);
         link.approve(address(uniswapPool), type(uint256).max);
         usdc.approve(address(uniswapPool), type(uint256).max);
 
-        // Whitelist deployer temporarily for seeding
+        // Whitelist deployer temporarily
         uniswapPool.setWhitelistedVault(deployer, true);
         lvrHook.setWhitelistedVault(deployer, true);
         
-        // Seed WETH/USDC pool: 10 WETH + 20,000 USDC ($2,000/ETH)
+        // 2. SEED WETH/USDC ($1M TVL)
+        // 250 WETH + 500,000 USDC (Asumsi ETH = $2000)
         {
-            (uint256 a0, uint256 a1) = _sortAmounts(address(weth), 10 ether, 20_000 * 1e6);
+            (uint256 a0, uint256 a1) = _sortAmounts(address(weth), 250 ether, 500_000 * 1e6);
             uniswapPool.addLiquidity(wethPoolKey, a0, a1, 0, 0);
         }
-        console.log("Seeded WETH/USDC pool");
+        console.log("Seeded WETH/USDC pool ($1M TVL)");
         
-        // Seed WBTC/USDC pool: 0.5 WBTC + 35,000 USDC ($70,000/BTC)
+        // 3. SEED WBTC/USDC ($1M TVL)
+        // 7.15 WBTC + 500,000 USDC (Asumsi BTC = $70,000)
+        // 7.15 * 10^8 = 715,000,000 satoshi
         {
-            (uint256 a0, uint256 a1) = _sortAmounts(address(wbtc), 0.5e8, 35_000 * 1e6);
+            (uint256 a0, uint256 a1) = _sortAmounts(address(wbtc), 715000000, 500_000 * 1e6);
             uniswapPool.addLiquidity(wbtcPoolKey, a0, a1, 0, 0);
         }
-        console.log("Seeded WBTC/USDC pool");
+        console.log("Seeded WBTC/USDC pool ($1M TVL)");
         
-        // Seed LINK/USDC pool: 2000 LINK + 18,000 USDC ($9/LINK)
+        // 4. SEED LINK/USDC ($1M TVL)
+        // 55,556 LINK + 500,000 USDC (Asumsi LINK = $9)
         {
-            (uint256 a0, uint256 a1) = _sortAmounts(address(link), 2000 ether, 18_000 * 1e6);
+            (uint256 a0, uint256 a1) = _sortAmounts(address(link), 55556 ether, 500_000 * 1e6);
             uniswapPool.addLiquidity(linkPoolKey, a0, a1, 0, 0);
         }
-        console.log("Seeded LINK/USDC pool");
-        
-        // Remove deployer whitelist (optional)
-        // uniswapPool.setWhitelistedVault(deployer, false);
+        console.log("Seeded LINK/USDC pool ($1M TVL)");
     }
     
     /**

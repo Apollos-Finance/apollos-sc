@@ -145,17 +145,19 @@ contract ApollosCCIPReceiver is IApollosCCIPReceiver, CCIPReceiver, Ownable {
             return;
         }
         
-        // 4. Bridge: Mint MockUSDC 1:1 from real USDC received via CCIP
-        //    Real USDC stays in this contract as "backing reserve"
-        //    MockUSDC is used for swaps in mock ecosystem
+        // 4. Bridge: Mint MockUSDC from CCIP-BnM with 10x conversion
+        //    CCIP-BnM stays in this contract as "backing reserve"
+        //    MockUSDC is used for swaps in mock ecosystem at 10:1 ratio
         address swapFromAsset = localReceivedAsset;
         uint256 swapFromAmount = receivedAmount;
         
         if (mockQuoteAsset != address(0) && localReceivedAsset != mockQuoteAsset) {
-            // Real USDC received → mint MockUSDC 1:1
-            IMintableToken(mockQuoteAsset).mintTo(address(this), receivedAmount);
+            // CCIP-BnM received → mint MockUSDC with 10x multiplier
+            // 1 CCIP-BnM = 10 USDC equivalent
+            uint256 mockUsdcAmount = receivedAmount * 10;
+            IMintableToken(mockQuoteAsset).mintTo(address(this), mockUsdcAmount);
             swapFromAsset = mockQuoteAsset;
-            swapFromAmount = receivedAmount;
+            swapFromAmount = mockUsdcAmount;
         }
         
         // 5. Auto-Zap: Swap MockUSDC → target base asset (MockWETH/etc)

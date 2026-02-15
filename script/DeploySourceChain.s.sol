@@ -39,8 +39,9 @@ contract DeploySourceChain is Script {
     /// @notice Chainlink CCIP Router on Base Sepolia
     address constant CCIP_ROUTER_BASE_SEPOLIA = 0xD3b06cEbF099CE7DA4AcCf578aaebFDBd6e88a93;
     
-    /// @notice Base Sepolia USDC (official Chainlink testnet USDC)
-    address constant USDC_BASE_SEPOLIA = 0x036CbD53842c5426634e7929541eC2318f3dCF7e;
+    /// @notice Base Sepolia CCIP-BnM (Chainlink test token for CCIP)
+    /// 1 CCIP-BnM = 10 USDC equivalent for vault share calculations
+    address constant CCIP_BNM_BASE_SEPOLIA = 0x88A2d74F47a237a62e7A51cdDa67270CE381555e;
     
     // ============ Main Deployment ============
     
@@ -72,9 +73,9 @@ contract DeploySourceChain is Script {
         sourceRouter.setSupportedChain(ARB_SEPOLIA_CHAIN_SELECTOR, true);
         console.log("Enabled chain selector:", ARB_SEPOLIA_CHAIN_SELECTOR);
         
-        // Configure: Whitelist USDC as supported asset
-        sourceRouter.setSupportedAsset(USDC_BASE_SEPOLIA, true);
-        console.log("Whitelisted asset (USDC):", USDC_BASE_SEPOLIA);
+        // Configure: Whitelist CCIP-BnM as supported asset (1 CCIP-BnM = 10 USDC equivalent)
+        sourceRouter.setSupportedAsset(CCIP_BNM_BASE_SEPOLIA, true);
+        console.log("Whitelisted asset (CCIP-BnM):", CCIP_BNM_BASE_SEPOLIA);
 
         // Configure destination receiver directly from env
         sourceRouter.setDestinationReceiver(ccipReceiverOnArbitrum);
@@ -130,7 +131,8 @@ contract DeploySourceChain is Script {
         console.log("");
         console.log("--- Configuration ---");
         console.log("CCIP Router:         ", CCIP_ROUTER_BASE_SEPOLIA);
-        console.log("Supported Asset:     ", USDC_BASE_SEPOLIA);
+        console.log("Supported Asset:      CCIP-BnM (1 = 10 USDC equivalent)");
+        console.log("CCIP-BnM Address:    ", CCIP_BNM_BASE_SEPOLIA);
         console.log("Destination Chain:    Arbitrum Sepolia");
         console.log("Destination Receiver: ", ccipReceiverOnArbitrum);
         console.log("");
