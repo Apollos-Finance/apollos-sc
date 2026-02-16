@@ -152,9 +152,30 @@ contract ApollosCCIPReceiver is IApollosCCIPReceiver, CCIPReceiver, Ownable {
         uint256 swapFromAmount = receivedAmount;
         
         if (mockQuoteAsset != address(0) && localReceivedAsset != mockQuoteAsset) {
-            // CCIP-BnM received → mint MockUSDC with 10x multiplier
-            // 1 CCIP-BnM = 10 USDC equivalent
-            uint256 mockUsdcAmount = receivedAmount * 10;
+            // CCIP-BnM received (18 decimals) → mint MockUSDC (6 decimals)
+            // Logic: 1 CCIP-BnM = 10 USDC equivalent
+            
+            // Langkah 1: Hitung angka dasar (1 CCIP-BnM * 10)
+            // Hasil: 10e18
+            uint256 rawAmount = receivedAmount * 10;
+
+            // Langkah 2: Sesuaikan Decimals (18 -> 6)
+            // Kita bagi dengan 1e12 (12 nol) untuk membuang kelebihan desimal
+            uint256 mockUsdcAmount = rawAmount / 1e12; 
+
+            // SAFETY CHECK: Pastikan tidak 0 (kalo user kirim debu/dust amount)
+            if (mockUsdcAmount == 0) {
+                 emit CrossChainDepositFailed(
+                    message.messageId, 
+                    message.sourceChainSelector, 
+                    receiver, 
+                    localReceivedAsset, 
+                    receivedAmount, 
+                    "Amount too small for USDC conversion"
+                );
+                return;
+            }
+
             IMintableToken(mockQuoteAsset).mintTo(address(this), mockUsdcAmount);
             swapFromAsset = mockQuoteAsset;
             swapFromAmount = mockUsdcAmount;
