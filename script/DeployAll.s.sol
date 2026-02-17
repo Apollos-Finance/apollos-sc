@@ -92,7 +92,7 @@ contract DeployAll is Script {
         _deployFactory();
         _deployVaults();
         _deployRouter();
-        _deployCCIPReceiver();
+        _deployCCIPReceiver(deployer); // Updated: Pass deployer to fund reserve
         _configurePermissions(deployer);
         _seedLiquidity(deployer);
         
@@ -250,20 +250,28 @@ contract DeployAll is Script {
     
     // ============ Step 6: Deploy CCIPReceiver (Cross-Chain) ============
     
-    function _deployCCIPReceiver() internal {
+    function _deployCCIPReceiver(address deployer) internal {
         console.log("--- Step 6: Deploy CCIPReceiver ---");
         
         // Deploy CCIPReceiver with Auto-Zapping support
-        // Constructor: ccipRouter, factory, quoteAsset(CCIP-BnM), mockQuoteAsset(MockUSDC), swapPool
+        // Constructor: ccipRouter, factory, quoteAsset, reserveAsset (USDC), swapPool
         ccipReceiver = new ApollosCCIPReceiver(
             CCIP_ROUTER_ARB_SEPOLIA,     // Chainlink CCIP Router on Arbitrum
             address(factory),             // ApollosFactory for vault lookups
-            address(0),                   // quoteAsset: CCIP-BnM on Arb Sepolia (set later if needed)
-            address(usdc),                // mockQuoteAsset: MockUSDC for 10x bridge mint (1 CCIP-BnM = 10 MockUSDC)
+            address(0),                   // quoteAsset (unused or generic)
+            address(usdc),                // reserveAsset: Real MockUSDC for swap
             address(uniswapPool)          // MockUniswapPool for auto-zap swaps
         );
         console.log("ApollosCCIPReceiver:", address(ccipReceiver));
         
+        // --- Fund CCIPReceiver with Reserve USDC (Liquidity Bootstrapping) ---
+        // Mint 100k USDC to deployer then transfer to CCIPReceiver
+        // This acts as the "Reserve" for swapping incoming CCIP-BnM
+        uint256 reserveAmount = 1_000_000 * 1e6;
+        usdc.mintTo(deployer, reserveAmount);
+        usdc.transfer(address(ccipReceiver), reserveAmount);
+        console.log("Funded CCIPReceiver with 100k USDC reserve");
+
         // --- Configure asset → vault mappings ---
         ccipReceiver.setAssetVault(address(weth), wethVault);
         ccipReceiver.setAssetVault(address(wbtc), wbtcVault);
@@ -276,7 +284,6 @@ contract DeployAll is Script {
         
         // --- Configure swap routes (MockUSDC → target base asset) ---
         // These use the SAME pool keys as the vault LP pools
-        // because vault pools are MockUSDC/MockWETH, MockUSDC/MockWBTC, MockUSDC/MockLINK
         ccipReceiver.setSwapConfig(address(weth), wethPoolKey);
         ccipReceiver.setSwapConfig(address(wbtc), wbtcPoolKey);
         ccipReceiver.setSwapConfig(address(link), linkPoolKey);

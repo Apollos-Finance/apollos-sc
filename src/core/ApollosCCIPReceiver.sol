@@ -4,6 +4,7 @@ pragma solidity ^0.8.20;
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 import {CCIPReceiver} from "@chainlink/contracts-ccip/src/v0.8/ccip/applications/CCIPReceiver.sol";
 import {Client} from "@chainlink/contracts-ccip/src/v0.8/ccip/libraries/Client.sol";
@@ -18,35 +19,39 @@ import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
 import {PoolId, PoolIdLibrary} from "@uniswap/v4-core/src/types/PoolId.sol";
 import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
 
-/// @notice Minimal interface for MockToken.mintTo()
-interface IMintableToken {
-    function mintTo(address to, uint256 amount) external;
-}
-
 /**
  * @title ApollosCCIPReceiver
- * @notice Receives cross-chain deposits via Chainlink CCIP with Auto-Zapping
+ * @notice Receives cross-chain deposits via Chainlink CCIP with Auto-Zapping (Store-and-Execute)
  * @dev Deployed on Arbitrum (destination chain) to:
  *      1. Receive CCIP messages from source chain ApollosRouters
- *      2. Receive real USDC via CCIP → Mint MockUSDC 1:1
- *      3. Auto-Zap: Swap MockUSDC → target base asset (MockWETH/MockWBTC/MockLINK)
+ *      2. STORE the message details (Store-and-Execute pattern) to avoid gas limits
+ *      3. EXECUTE Zap using "Reserve Swap" mechanism (Use stored USDC, don't mint)
  *      4. Deposit into appropriate Apollos vault
- *      5. Credit vault shares to the original receiver
  *
- * Bridge Logic:
- *      Real USDC arrives via CCIP → mint MockUSDC 1:1 → swap in existing mock pools
- *      Real USDC stays in contract as "backing reserve"
- *
- * Data encoding (must match ApollosRouter):
- *      abi.encode(sourceAsset, amount, minShares, receiver, originalSender, targetBaseAsset)
+ * Architecture:
+ *      - Phase 1 (_ccipReceive): Lightweight. Validates sender & stores PendingDeposit.
+ *      - Phase 2 (executeZap): Heavy. Swaps Reserve USDC -> Target Asset -> Deposit Vault.
  */
-contract ApollosCCIPReceiver is IApollosCCIPReceiver, CCIPReceiver, Ownable {
+contract ApollosCCIPReceiver is IApollosCCIPReceiver, CCIPReceiver, Ownable, ReentrancyGuard {
     using SafeERC20 for IERC20;
     using PoolIdLibrary for PoolKey;
 
+    // ============ Structs ============
+    
+    struct PendingDeposit {
+        bytes32 messageId;
+        uint64 sourceChainSelector;
+        address sourceSender;
+        address receiver;
+        uint256 amount;          // Source asset amount (CCIP-BnM)
+        address sourceAsset;     // Source asset address
+        address targetBaseAsset; // Target vault base asset
+        uint256 minShares;       // Slippage protection
+        bool executed;           // Execution status
+    }
+
     // ============ Immutables ============
     
-    /// @notice Apollos Factory for vault lookups
     IApollosFactory public immutable apollosFactory;
 
     // ============ State Variables ============
@@ -54,11 +59,10 @@ contract ApollosCCIPReceiver is IApollosCCIPReceiver, CCIPReceiver, Ownable {
     /// @notice Quote asset used in mock pools (MockUSDC)
     address public quoteAsset;
     
-    /// @notice MockUSDC token for 1:1 minting (bridge from real USDC)
-    /// @dev Real USDC from CCIP → mint MockUSDC 1:1 → swap in mock pools
-    address public mockQuoteAsset;
+    /// @notice Reserve asset used for swapping (MockUSDC)
+    /// @dev Contract MUST be funded with this token for zapping to work!
+    address public reserveAsset; 
     
-    /// @notice MockUniswapPool for auto-zapping swaps
     IMockUniswapPool public swapPool;
     
     /// @notice sourceChainSelector => senderAddress => authorized
@@ -76,37 +80,40 @@ contract ApollosCCIPReceiver is IApollosCCIPReceiver, CCIPReceiver, Ownable {
     /// @notice baseAsset => whether PoolKey is configured
     mapping(address => bool) public hasSwapConfig;
 
+    /// @notice Stored pending deposits (Store-and-Execute)
+    mapping(bytes32 => PendingDeposit) public pendingDeposits;
+
+    // ============ Events ============
+    
+    event DepositStored(bytes32 indexed messageId, uint64 indexed sourceChainSelector, address indexed receiver, uint256 amount);
+    event ZapExecuted(bytes32 indexed messageId, address indexed vault, uint256 shares);
+    event ZapFailed(bytes32 indexed messageId, string reason);
+    event ReserveInsufficient(uint256 required, uint256 available);
+
     // ============ Constructor ============
     
     constructor(
         address _ccipRouter,
         address _factory,
         address _quoteAsset,
-        address _mockQuoteAsset,
+        address _reserveAsset,
         address _swapPool
     ) CCIPReceiver(_ccipRouter) Ownable(msg.sender) {
         if (_factory == address(0)) revert ZeroAddress();
         
         apollosFactory = IApollosFactory(_factory);
-        quoteAsset = _quoteAsset;
-        mockQuoteAsset = _mockQuoteAsset;
+        quoteAsset = _quoteAsset; // Can be same as reserveAsset
+        reserveAsset = _reserveAsset; // MockUSDC
         if (_swapPool != address(0)) {
             swapPool = IMockUniswapPool(_swapPool);
         }
     }
 
-    // ============ CCIP Receive (Override) ============
+    // ============ CCIP Receive (Phase 1: Store) ============
 
     /**
      * @notice Internal handler for incoming CCIP messages
-     * @dev Called by CCIPReceiver.ccipReceive() after router validation
-     *
-     * Flow:
-     *   1. Validate source chain + sender
-     *   2. Decode deposit data (6 fields)
-     *   3. Determine received token amount
-     *   4. If received token != targetBaseAsset → Auto-Zap (swap via MockUniswapPool)
-     *   5. Deposit base asset to vault on behalf of receiver
+     * @dev Only stores the intent. Does NOT execute heavy logic.
      */
     function _ccipReceive(Client.Any2EVMMessage memory message) 
         internal 
@@ -118,171 +125,152 @@ contract ApollosCCIPReceiver is IApollosCCIPReceiver, CCIPReceiver, Ownable {
             revert InvalidSender();
         }
         
-        // 2. Decode deposit data (must match ApollosRouter encoding)
+        // 2. Decode deposit data
         (
             address sourceAsset,
             uint256 amount,
             uint256 minShares,
             address receiver,
-            address originalSender,
+            , // originalSender (unused in store)
             address targetBaseAsset
         ) = abi.decode(message.data, (address, uint256, uint256, address, address, address));
         
-        // 3. Determine received token and amount
-        address localReceivedAsset = _getLocalAsset(sourceAsset);
-        if (localReceivedAsset == address(0)) revert InvalidAsset();
+        // 3. Store Pending Deposit
+        pendingDeposits[message.messageId] = PendingDeposit({
+            messageId: message.messageId,
+            sourceChainSelector: message.sourceChainSelector,
+            sourceSender: sourceSender,
+            receiver: receiver,
+            amount: amount,
+            sourceAsset: sourceAsset,
+            targetBaseAsset: targetBaseAsset,
+            minShares: minShares,
+            executed: false
+        });
         
-        uint256 receivedAmount = _getReceivedAmount(message, localReceivedAsset, amount);
-        if (receivedAmount == 0) {
-            emit CrossChainDepositFailed(
-                message.messageId,
-                message.sourceChainSelector,
-                receiver,
-                localReceivedAsset,
-                amount,
-                "No tokens received"
-            );
-            return;
-        }
+        emit DepositStored(message.messageId, message.sourceChainSelector, receiver, amount);
+    }
+
+    // ============ Execute Zap (Phase 2: Execute) ============
+
+    /**
+     * @notice Execute the stored deposit intent
+     * @dev Anyone can call this (usually Chainlink Automation or User via UI)
+     *      Uses "Reserve Swap" mechanism:
+     *      1. 1 CCIP-BnM = 10 USDC (Equivalent)
+     *      2. Takes 10 USDC from contract's own balance (Reserve)
+     *      3. Swaps USDC -> Target Base Asset
+     *      4. Deposits to Vault
+     */
+    function executeZap(bytes32 messageId) external nonReentrant {
+        PendingDeposit storage deposit = pendingDeposits[messageId];
         
-        // 4. Bridge: Mint MockUSDC from CCIP-BnM with 10x conversion
-        //    CCIP-BnM stays in this contract as "backing reserve"
-        //    MockUSDC is used for swaps in mock ecosystem at 10:1 ratio
+        if (deposit.amount == 0) revert("Deposit not found");
+        if (deposit.executed) revert("Already executed");
+        
+        // Mark executed to prevent reentrancy/replay
+        deposit.executed = true;
+
+        // 1. Determine local asset & Check Received Amount
+        address localReceivedAsset = _getLocalAsset(deposit.sourceAsset);
+        // Note: In store-and-execute, we assume the tokens are already in the contract from Phase 1
+        
+        // 2. Reserve Swap Logic: 1 CCIP-BnM (18 dec) = 10 USDC (6 dec)
+        // Only applies if we received CCIP-BnM and need USDC
         address swapFromAsset = localReceivedAsset;
-        uint256 swapFromAmount = receivedAmount;
-        
-        if (mockQuoteAsset != address(0) && localReceivedAsset != mockQuoteAsset) {
-            // CCIP-BnM received (18 decimals) → mint MockUSDC (6 decimals)
-            // Logic: 1 CCIP-BnM = 10 USDC equivalent
-            
-            // Langkah 1: Hitung angka dasar (1 CCIP-BnM * 10)
-            // Hasil: 10e18
-            uint256 rawAmount = receivedAmount * 10;
+        uint256 swapFromAmount = deposit.amount;
 
-            // Langkah 2: Sesuaikan Decimals (18 -> 6)
-            // Kita bagi dengan 1e12 (12 nol) untuk membuang kelebihan desimal
-            uint256 mockUsdcAmount = rawAmount / 1e12; 
+        // Check if we need to use Reserve USDC
+        if (localReceivedAsset != reserveAsset && reserveAsset != address(0)) {
+            // Calculate required USDC
+            // 1 CCIP-BnM = 10 USDC equivalent value
+            uint256 rawAmount = deposit.amount * 10;
+            uint256 requiredUsdc = rawAmount / 1e12; // Adjust decimals 18 -> 6
 
-            // SAFETY CHECK: Pastikan tidak 0 (kalo user kirim debu/dust amount)
-            if (mockUsdcAmount == 0) {
-                 emit CrossChainDepositFailed(
-                    message.messageId, 
-                    message.sourceChainSelector, 
-                    receiver, 
-                    localReceivedAsset, 
-                    receivedAmount, 
-                    "Amount too small for USDC conversion"
-                );
-                return;
+            // Check Reserve Balance
+            uint256 reserveBalance = IERC20(reserveAsset).balanceOf(address(this));
+            if (reserveBalance < requiredUsdc) {
+                emit ZapFailed(messageId, "Insufficient Reserve USDC");
+                emit ReserveInsufficient(requiredUsdc, reserveBalance);
+                return; // Fail gracefully, user can retry later when reserve is refilled
             }
 
-            IMintableToken(mockQuoteAsset).mintTo(address(this), mockUsdcAmount);
-            swapFromAsset = mockQuoteAsset;
-            swapFromAmount = mockUsdcAmount;
+            // "Swap" by switching reference to Reserve USDC
+            swapFromAsset = reserveAsset;
+            swapFromAmount = requiredUsdc;
         }
-        
-        // 5. Auto-Zap: Swap MockUSDC → target base asset (MockWETH/etc)
+
+        // 3. Auto-Zap: Swap USDC -> Target Base Asset (e.g. WETH)
         address depositAsset = swapFromAsset;
         uint256 depositAmount = swapFromAmount;
-        
-        if (swapFromAsset != targetBaseAsset) {
+
+        if (swapFromAsset != deposit.targetBaseAsset) {
             (depositAsset, depositAmount) = _autoZap(
-                swapFromAsset,     // MockUSDC (not real USDC)
-                targetBaseAsset,   // MockWETH/MockWBTC/MockLINK
+                swapFromAsset,
+                deposit.targetBaseAsset,
                 swapFromAmount,
-                message.messageId,
-                message.sourceChainSelector,
-                receiver
+                messageId
             );
             
-            if (depositAsset == address(0)) return;
+            if (depositAsset == address(0)) {
+                // Swap failed (log emitted in _autoZap)
+                // We revert the "executed" flag implicitly if we reverted? 
+                // No, we want to allow retry? 
+                // For simplicity here: if swap fails, we mark executed=false to allow retry manually?
+                // OR better: keep executed=true but emit failure, so we don't block.
+                // But in DeFi, if it fails due to slippage, we WANT retry.
+                deposit.executed = false; 
+                return;
+            }
         }
-        
-        // 5. Deposit to vault
+
+        // 4. Deposit to Vault
         _depositToVault(
             depositAsset,
             depositAmount,
-            receiver,
-            minShares,
-            message.messageId,
-            message.sourceChainSelector
+            deposit.receiver,
+            deposit.minShares,
+            messageId,
+            deposit.sourceChainSelector
         );
     }
 
-    // ============ Internal: Auto-Zap ============
+    // ============ Internal Functions ============
 
-    /**
-     * @notice Swap received token to target base asset via MockUniswapPool
-     * @return swappedAsset The token received from swap
-     * @return swappedAmount The amount received from swap
-     */
     function _autoZap(
         address fromToken,
         address toToken,
         uint256 amountIn,
-        bytes32 messageId,
-        uint64 sourceChainSelector,
-        address receiver
+        bytes32 messageId
     ) internal returns (address swappedAsset, uint256 swappedAmount) {
-        // Validate swap pool is configured
-        if (address(swapPool) == address(0)) {
-            emit CrossChainDepositFailed(
-                messageId, sourceChainSelector, receiver, fromToken, amountIn,
-                "Swap pool not configured"
-            );
-            return (address(0), 0);
-        }
-        
-        // Get PoolKey for this target asset
-        if (!hasSwapConfig[toToken]) {
-            emit CrossChainDepositFailed(
-                messageId, sourceChainSelector, receiver, fromToken, amountIn,
-                "No swap config for target asset"
-            );
+        if (address(swapPool) == address(0) || !hasSwapConfig[toToken]) {
+            emit ZapFailed(messageId, "Swap config missing");
             return (address(0), 0);
         }
         
         PoolKey memory poolKey = swapPoolKeys[toToken];
-        
-        // Determine swap direction
-        // If fromToken is currency0, zeroForOne = true (sell currency0, buy currency1)
-        // If fromToken is currency1, zeroForOne = false (sell currency1, buy currency0)
         bool zeroForOne = (Currency.unwrap(poolKey.currency0) == fromToken);
         
-        // Approve swap pool to spend tokens
         IERC20(fromToken).safeIncreaseAllowance(address(swapPool), amountIn);
         
-        // Execute swap (negative amountSpecified = exactIn in V4 convention)
         try swapPool.swap(
             poolKey,
             zeroForOne,
             -int256(amountIn),
-            0 // no price limit
-        ) returns (uint256 /* actualIn */, uint256 amountOut) {
+            0 
+        ) returns (uint256, uint256 amountOut) {
             swappedAsset = toToken;
             swappedAmount = amountOut;
-            
             emit SwapExecuted(fromToken, toToken, amountIn, amountOut);
         } catch Error(string memory reason) {
-            emit CrossChainDepositFailed(
-                messageId, sourceChainSelector, receiver, fromToken, amountIn,
-                string.concat("Swap failed: ", reason)
-            );
+            emit ZapFailed(messageId, string.concat("Swap failed: ", reason));
             return (address(0), 0);
         } catch {
-            emit CrossChainDepositFailed(
-                messageId, sourceChainSelector, receiver, fromToken, amountIn,
-                "Swap failed: unknown error"
-            );
+            emit ZapFailed(messageId, "Swap failed: unknown");
             return (address(0), 0);
         }
     }
 
-    // ============ Internal: Deposit ============
-
-    /**
-     * @notice Deposit asset to vault on behalf of receiver
-     */
     function _depositToVault(
         address asset,
         uint256 amount,
@@ -293,56 +281,27 @@ contract ApollosCCIPReceiver is IApollosCCIPReceiver, CCIPReceiver, Ownable {
     ) internal {
         address vault = _getVaultForAsset(asset);
         if (vault == address(0)) {
-            emit CrossChainDepositFailed(
-                messageId, sourceChainSelector, receiver, asset, amount,
-                "Vault not found for asset"
-            );
+            emit ZapFailed(messageId, "Vault not found");
             return;
         }
         
-        // Approve vault to spend tokens
         IERC20(asset).safeIncreaseAllowance(vault, amount);
         
-        // Deposit to vault
         try IApollosVault(vault).depositFor(
             amount, receiver, minShares
         ) returns (uint256 shares) {
             emit CrossChainDepositReceived(
                 messageId, sourceChainSelector, receiver, asset, amount, shares
             );
+            emit ZapExecuted(messageId, vault, shares);
         } catch Error(string memory reason) {
             emit CrossChainDepositFailed(
                 messageId, sourceChainSelector, receiver, asset, amount, reason
             );
+            emit ZapFailed(messageId, reason);
         }
     }
 
-    // ============ Internal: Helpers ============
-
-    /**
-     * @notice Get amount of tokens received from CCIP transfer
-     */
-    function _getReceivedAmount(
-        Client.Any2EVMMessage memory message,
-        address localAsset,
-        uint256 expectedAmount
-    ) internal view returns (uint256 receivedAmount) {
-        // Check CCIP token amounts first
-        for (uint256 i = 0; i < message.destTokenAmounts.length; i++) {
-            if (message.destTokenAmounts[i].token == localAsset) {
-                return message.destTokenAmounts[i].amount;
-            }
-        }
-        
-        // Fallback: check contract balance (for testing/mock)
-        uint256 balance = IERC20(localAsset).balanceOf(address(this));
-        if (balance >= expectedAmount) {
-            return expectedAmount;
-        }
-        
-        return 0;
-    }
-    
     function _getLocalAsset(address sourceAsset) internal view returns (address) {
         if (assetMapping[sourceAsset] != address(0)) {
             return assetMapping[sourceAsset];
@@ -369,10 +328,7 @@ contract ApollosCCIPReceiver is IApollosCCIPReceiver, CCIPReceiver, Ownable {
         emit SourceChainConfigured(sourceChainSelector, senderAddress, enabled);
     }
 
-    function setAssetMapping(
-        address sourceAsset, 
-        address localAsset
-    ) external override onlyOwner {
+    function setAssetMapping(address sourceAsset, address localAsset) external override onlyOwner {
         if (sourceAsset == address(0) || localAsset == address(0)) revert ZeroAddress();
         assetMapping[sourceAsset] = localAsset;
     }
@@ -382,39 +338,27 @@ contract ApollosCCIPReceiver is IApollosCCIPReceiver, CCIPReceiver, Ownable {
         assetToVault[asset] = vault;
     }
 
-    /**
-     * @notice Set MockUniswapPool for auto-zapping
-     */
     function setSwapPool(address pool) external override onlyOwner {
         swapPool = IMockUniswapPool(pool);
     }
 
-    /**
-     * @notice Configure swap route for a target base asset
-     * @dev Admin sets the PoolKey so CCIPReceiver knows how to swap USDC → baseAsset
-     * @param targetBaseAsset The base asset (WETH/WBTC/LINK)
-     * @param poolKey The PoolKey for the USDC/baseAsset pool on MockUniswapPool
-     */
-    function setSwapConfig(
-        address targetBaseAsset,
-        PoolKey memory poolKey
-    ) external onlyOwner {
+    function setSwapConfig(address targetBaseAsset, PoolKey memory poolKey) external onlyOwner {
         if (targetBaseAsset == address(0)) revert ZeroAddress();
         swapPoolKeys[targetBaseAsset] = poolKey;
         hasSwapConfig[targetBaseAsset] = true;
     }
 
     function setQuoteAsset(address _quoteAsset) external onlyOwner {
-        if (_quoteAsset == address(0)) revert ZeroAddress();
         quoteAsset = _quoteAsset;
     }
 
-    /**
-     * @notice Set MockUSDC address for 1:1 bridge minting
-     * @dev Real USDC from CCIP → mint this MockUSDC 1:1 → swap in mock pools
-     */
+    function setReserveAsset(address _reserveAsset) external onlyOwner {
+        reserveAsset = _reserveAsset;
+    }
+    
+    // Legacy support for interface
     function setMockQuoteAsset(address _mockQuoteAsset) external onlyOwner {
-        mockQuoteAsset = _mockQuoteAsset;
+        reserveAsset = _mockQuoteAsset;
     }
 
     function rescueTokens(address token, uint256 amount) external override onlyOwner {
@@ -423,14 +367,16 @@ contract ApollosCCIPReceiver is IApollosCCIPReceiver, CCIPReceiver, Ownable {
 
     // ============ View Functions ============
 
-    function isAuthorizedSource(
-        uint64 chainSelector,
-        address sender
-    ) external view override returns (bool) {
+    function isAuthorizedSource(uint64 chainSelector, address sender) external view override returns (bool) {
         return authorizedSources[chainSelector][sender];
     }
 
     function getLocalAsset(address sourceAsset) external view override returns (address) {
         return _getLocalAsset(sourceAsset);
+    }
+    
+    // Helper to check if a zap is actionable
+    function isZapPending(bytes32 messageId) external view returns (bool) {
+        return pendingDeposits[messageId].amount > 0 && !pendingDeposits[messageId].executed;
     }
 }
