@@ -14,63 +14,40 @@ import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
  */
 interface IApollosVault {
     // ============ Structs ============
-    
+
     /// @notice Vault configuration
     struct VaultConfig {
-        address baseAsset;          // e.g., WETH
-        address quoteAsset;         // e.g., USDC
-        uint256 targetLeverage;     // e.g., 2e18 = 2x leverage
-        uint256 maxLeverage;        // e.g., 2.5e18 = 2.5x max
+        address baseAsset; // e.g., WETH
+        address quoteAsset; // e.g., USDC
+        uint256 targetLeverage; // e.g., 2e18 = 2x leverage
+        uint256 maxLeverage; // e.g., 2.5e18 = 2.5x max
         uint256 rebalanceThreshold; // e.g., 1.1e18 = rebalance if HF < 1.1
     }
 
     /// @notice Vault state snapshot
     struct VaultState {
-        uint256 totalBaseAssets;    // Total WETH in vault
-        uint256 totalBorrowed;      // Total USDC borrowed from Aave
-        uint256 lpTokenValue;       // Value of LP position in Uniswap
-        uint256 totalShares;        // Total afTOKEN supply
-        uint256 healthFactor;       // Current health factor
-        uint256 currentLeverage;    // Current leverage ratio
+        uint256 totalBaseAssets; // Total WETH in vault
+        uint256 totalBorrowed; // Total USDC borrowed from Aave
+        uint256 lpTokenValue; // Value of LP position in Uniswap
+        uint256 totalShares; // Total afTOKEN supply
+        uint256 healthFactor; // Current health factor
+        uint256 currentLeverage; // Current leverage ratio
     }
 
     // ============ Events ============
-    
-    event Deposit(
-        address indexed user,
-        uint256 baseAmount,
-        uint256 sharesReceived,
-        uint256 borrowedAmount
-    );
-    
-    event Withdraw(
-        address indexed user,
-        uint256 sharesBurned,
-        uint256 baseAmountReceived,
-        uint256 debtRepaid
-    );
-    
-    event Rebalance(
-        uint256 oldLeverage,
-        uint256 newLeverage,
-        uint256 debtRepaid,
-        uint256 timestamp
-    );
-    
-    event EmergencyWithdraw(
-        address indexed user,
-        uint256 sharesBurned,
-        uint256 amountReceived
-    );
-    
-    event HarvestFees(
-        uint256 tradingFees,
-        uint256 protocolFee,
-        uint256 timestamp
-    );
+
+    event Deposit(address indexed user, uint256 baseAmount, uint256 sharesReceived, uint256 borrowedAmount);
+
+    event Withdraw(address indexed user, uint256 sharesBurned, uint256 baseAmountReceived, uint256 debtRepaid);
+
+    event Rebalance(uint256 oldLeverage, uint256 newLeverage, uint256 debtRepaid, uint256 timestamp);
+
+    event EmergencyWithdraw(address indexed user, uint256 sharesBurned, uint256 amountReceived);
+
+    event HarvestFees(uint256 tradingFees, uint256 protocolFee, uint256 timestamp);
 
     // ============ Errors ============
-    
+
     error ZeroAmount();
     error ZeroAddress();
     error InsufficientShares();
@@ -99,11 +76,7 @@ interface IApollosVault {
      * @param minShares Minimum shares to receive
      * @return shares Amount of shares received
      */
-    function depositFor(
-        uint256 amount,
-        address receiver,
-        uint256 minShares
-    ) external returns (uint256 shares);
+    function depositFor(uint256 amount, address receiver, uint256 minShares) external returns (uint256 shares);
 
     /**
      * @notice Withdraw by burning shares
@@ -201,11 +174,7 @@ interface IApollosVault {
      * @param maxLeverage New max leverage
      * @param rebalanceThreshold New rebalance threshold
      */
-    function updateConfig(
-        uint256 targetLeverage,
-        uint256 maxLeverage,
-        uint256 rebalanceThreshold
-    ) external;
+    function updateConfig(uint256 targetLeverage, uint256 maxLeverage, uint256 rebalanceThreshold) external;
 
     /**
      * @notice Update the Net Asset Value (NAV) of the deployed portfolio

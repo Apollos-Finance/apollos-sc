@@ -32,7 +32,7 @@ contract MockUniswapPool is IMockUniswapPool, Ownable, ReentrancyGuard {
     // ============ Constants ============
     uint24 public constant MAX_FEE = 1_000_000; // 100% in V4 format (1e6)
     uint256 public constant MINIMUM_LIQUIDITY = 1000;
-    
+
     // Flag to indicate dynamic fee override from hook (bit 24 = 0x800000)
     // MUST match OVERRIDE_FEE_FLAG in LVRHook.sol
     uint24 public constant DYNAMIC_FEE_FLAG = 0x800000;
@@ -106,10 +106,7 @@ contract MockUniswapPool is IMockUniswapPool, Ownable, ReentrancyGuard {
         uint256 amount1Desired,
         uint256 amount0Min,
         uint256 amount1Min
-    ) external 
-      nonReentrant 
-      returns (uint256 amount0, uint256 amount1, uint256 liquidity) 
-    {
+    ) external nonReentrant returns (uint256 amount0, uint256 amount1, uint256 liquidity) {
         PoolId id = key.toId();
         if (Currency.unwrap(pools[id].currency0) == address(0)) revert PoolDoesNotExist();
         if (!pools[id].isActive) revert PoolNotActive();
@@ -120,7 +117,7 @@ contract MockUniswapPool is IMockUniswapPool, Ownable, ReentrancyGuard {
         // Call beforeAddLiquidity hook for whitelist verification
         if (address(pool.hooks) != address(0)) {
             IPoolManager.ModifyLiquidityParams memory params = IPoolManager.ModifyLiquidityParams({
-                tickLower: -887220,  // Full range for simplified AMM
+                tickLower: -887220, // Full range for simplified AMM
                 tickUpper: 887220,
                 liquidityDelta: int256(amount0Desired), // Placeholder
                 salt: bytes32(0)
@@ -146,7 +143,7 @@ contract MockUniswapPool is IMockUniswapPool, Ownable, ReentrancyGuard {
         } else {
             // Calculate optimal ratio
             uint256 amount1Optimal = (amount0Desired * pool.reserve1) / pool.reserve0;
-            
+
             if (amount1Optimal <= amount1Desired) {
                 if (amount1Optimal < amount1Min) revert SlippageExceeded();
                 amount0 = amount0Desired;
@@ -183,14 +180,10 @@ contract MockUniswapPool is IMockUniswapPool, Ownable, ReentrancyGuard {
     }
 
     /// @inheritdoc IMockUniswapPool
-    function removeLiquidity(
-        PoolKey memory key,
-        uint256 liquidity,
-        uint256 amount0Min,
-        uint256 amount1Min
-    ) external 
-      nonReentrant 
-      returns (uint256 amount0, uint256 amount1) 
+    function removeLiquidity(PoolKey memory key, uint256 liquidity, uint256 amount0Min, uint256 amount1Min)
+        external
+        nonReentrant
+        returns (uint256 amount0, uint256 amount1)
     {
         PoolId id = key.toId();
         if (Currency.unwrap(pools[id].currency0) == address(0)) revert PoolDoesNotExist();
@@ -214,7 +207,7 @@ contract MockUniswapPool is IMockUniswapPool, Ownable, ReentrancyGuard {
 
         // Update position
         pos.liquidity -= liquidity;
-        
+
         // Transfer tokens back
         IERC20(Currency.unwrap(pool.currency0)).safeTransfer(msg.sender, amount0);
         IERC20(Currency.unwrap(pool.currency1)).safeTransfer(msg.sender, amount1);
@@ -223,10 +216,7 @@ contract MockUniswapPool is IMockUniswapPool, Ownable, ReentrancyGuard {
     }
 
     /// @inheritdoc IMockUniswapPool
-    function getPosition(
-        PoolId id,
-        address provider
-    ) external view returns (LiquidityPosition memory) {
+    function getPosition(PoolId id, address provider) external view returns (LiquidityPosition memory) {
         return positions[id][provider];
     }
 
@@ -238,9 +228,10 @@ contract MockUniswapPool is IMockUniswapPool, Ownable, ReentrancyGuard {
         bool zeroForOne,
         int256 amountSpecified,
         uint160 /* sqrtPriceLimitX96 */
-    ) external 
-      nonReentrant 
-      returns (uint256 amountIn, uint256 amountOut) 
+    )
+        external
+        nonReentrant
+        returns (uint256 amountIn, uint256 amountOut)
     {
         PoolId id = key.toId();
         if (Currency.unwrap(pools[id].currency0) == address(0)) revert PoolDoesNotExist();
@@ -248,20 +239,18 @@ contract MockUniswapPool is IMockUniswapPool, Ownable, ReentrancyGuard {
         if (amountSpecified == 0) revert ZeroAmount();
 
         PoolState storage pool = pools[id];
-        
+
         // Determine actual fee by calling beforeSwap hook
         uint24 effectiveFee = pool.baseFee;
-        
+
         if (address(pool.hooks) != address(0)) {
             IPoolManager.SwapParams memory params = IPoolManager.SwapParams({
-                zeroForOne: zeroForOne,
-                amountSpecified: amountSpecified,
-                sqrtPriceLimitX96: 0
+                zeroForOne: zeroForOne, amountSpecified: amountSpecified, sqrtPriceLimitX96: 0
             });
 
-            try pool.hooks.beforeSwap(msg.sender, key, params, "") 
-                returns (bytes4 selector, BeforeSwapDelta, uint24 hookFee) 
-            {
+            try pool.hooks.beforeSwap(msg.sender, key, params, "") returns (
+                bytes4 selector, BeforeSwapDelta, uint24 hookFee
+            ) {
                 if (selector == IHooks.beforeSwap.selector) {
                     // Check if hook returned a fee override (bit 23 set)
                     if ((hookFee & DYNAMIC_FEE_FLAG) != 0) {
@@ -318,31 +307,30 @@ contract MockUniswapPool is IMockUniswapPool, Ownable, ReentrancyGuard {
     }
 
     /// @inheritdoc IMockUniswapPool
-    function getSwapQuote(
-        PoolKey memory key,
-        bool zeroForOne,
-        uint256 amountIn
-    ) external view returns (uint256 amountOut, uint256 feeAmount) {
+    function getSwapQuote(PoolKey memory key, bool zeroForOne, uint256 amountIn)
+        external
+        view
+        returns (uint256 amountOut, uint256 feeAmount)
+    {
         PoolId id = key.toId();
         if (Currency.unwrap(pools[id].currency0) == address(0)) revert PoolDoesNotExist();
 
         PoolState storage pool = pools[id];
-        
+
         // Use base fee for quote (hook fee is dynamic)
         uint24 fee = pool.baseFee;
-        
+
         (amountOut, feeAmount) = _calculateSwapOutput(pool, zeroForOne, amountIn, fee);
     }
 
     /**
      * @dev Calculate swap output using constant product formula (x * y = k)
      */
-    function _calculateSwapOutput(
-        PoolState storage pool,
-        bool zeroForOne,
-        uint256 amountIn,
-        uint24 fee
-    ) internal view returns (uint256 amountOut, uint256 feeAmount) {
+    function _calculateSwapOutput(PoolState storage pool, bool zeroForOne, uint256 amountIn, uint24 fee)
+        internal
+        view
+        returns (uint256 amountOut, uint256 feeAmount)
+    {
         uint256 reserveIn = zeroForOne ? pool.reserve0 : pool.reserve1;
         uint256 reserveOut = zeroForOne ? pool.reserve1 : pool.reserve0;
 
@@ -358,12 +346,11 @@ contract MockUniswapPool is IMockUniswapPool, Ownable, ReentrancyGuard {
     /**
      * @dev Calculate required input for exact output swap
      */
-    function _calculateSwapInput(
-        PoolState storage pool,
-        bool zeroForOne,
-        uint256 amountOut,
-        uint24 fee
-    ) internal view returns (uint256 amountIn) {
+    function _calculateSwapInput(PoolState storage pool, bool zeroForOne, uint256 amountOut, uint24 fee)
+        internal
+        view
+        returns (uint256 amountIn)
+    {
         uint256 reserveIn = zeroForOne ? pool.reserve0 : pool.reserve1;
         uint256 reserveOut = zeroForOne ? pool.reserve1 : pool.reserve0;
 
@@ -371,7 +358,7 @@ contract MockUniswapPool is IMockUniswapPool, Ownable, ReentrancyGuard {
 
         // Inverse of constant product: dx = x * dy / (y - dy)
         uint256 amountInBeforeFee = (reserveIn * amountOut) / (reserveOut - amountOut);
-        
+
         // Add fee: amountIn = amountInBeforeFee / (1 - fee)
         amountIn = (amountInBeforeFee * MAX_FEE) / (MAX_FEE - fee);
     }
@@ -406,19 +393,19 @@ contract MockUniswapPool is IMockUniswapPool, Ownable, ReentrancyGuard {
     }
 
     /// @inheritdoc IMockUniswapPool
-    function getPositionValue(PoolId id, address provider) 
-        external 
-        view 
-        poolExists(id) 
-        returns (uint256 amount0, uint256 amount1) 
+    function getPositionValue(PoolId id, address provider)
+        external
+        view
+        poolExists(id)
+        returns (uint256 amount0, uint256 amount1)
     {
         PoolState storage pool = pools[id];
         LiquidityPosition storage position = positions[id][provider];
-        
+
         if (pool.totalLiquidity == 0 || position.liquidity == 0) {
             return (0, 0);
         }
-        
+
         // Calculate proportional share of reserves
         // amount0 = (userLiquidity / totalLiquidity) * reserve0
         // amount1 = (userLiquidity / totalLiquidity) * reserve1

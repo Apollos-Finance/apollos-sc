@@ -13,10 +13,10 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 contract MockToken is ERC20, ERC20Burnable, Ownable {
     uint8 private _decimals;
     bool public immutable isWETH; // True only for WETH, false for USDC/LINK/WBTC
-    
+
     uint256 public constant FAUCET_COOLDOWN = 1 days;
     uint256 public constant MAX_FAUCET_AMOUNT = 10000;
-    
+
     mapping(address => uint256) public lastFaucetClaim;
 
     event FaucetClaimed(address indexed user, uint256 amount);
@@ -36,12 +36,7 @@ contract MockToken is ERC20, ERC20Burnable, Ownable {
      * @param decimals_ Token decimals (18 for WETH, 6 for USDC)
      * @param _isWETH True if this is WETH (enables deposit/withdraw), false otherwise
      */
-    constructor(
-        string memory name, 
-        string memory symbol, 
-        uint8 decimals_,
-        bool _isWETH
-    )
+    constructor(string memory name, string memory symbol, uint8 decimals_, bool _isWETH)
         ERC20(name, symbol)
         Ownable(msg.sender)
     {
@@ -65,7 +60,7 @@ contract MockToken is ERC20, ERC20Burnable, Ownable {
     function mint(address to, uint256 amount) external onlyOwner {
         if (to == address(0)) revert ZeroAddress();
         if (amount == 0) revert ZeroAmount();
-        
+
         _mint(to, amount);
         emit TokensMinted(to, amount);
     }
@@ -87,7 +82,7 @@ contract MockToken is ERC20, ERC20Burnable, Ownable {
      */
     function faucet(uint256 amount) external {
         uint256 timeSinceLastClaim = block.timestamp - lastFaucetClaim[msg.sender];
-        
+
         if (lastFaucetClaim[msg.sender] != 0 && timeSinceLastClaim < FAUCET_COOLDOWN) {
             revert FaucetCooldownActive(FAUCET_COOLDOWN - timeSinceLastClaim);
         }
@@ -155,8 +150,8 @@ contract MockToken is ERC20, ERC20Burnable, Ownable {
         if (!isWETH) revert NotWETH();
         if (amount == 0) revert ZeroAmount();
         _burn(msg.sender, amount);
-        
-        (bool success, ) = msg.sender.call{value: amount}("");
+
+        (bool success,) = msg.sender.call{value: amount}("");
         require(success, "ETH transfer failed");
     }
 

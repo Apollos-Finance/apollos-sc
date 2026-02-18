@@ -13,30 +13,30 @@ import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
  */
 interface IApollosFactory {
     // ============ Structs ============
-    
+
     /// @notice Parameters for creating a new vault
     struct VaultParams {
-        string name;                // e.g., "Apollos WETH Vault"
-        string symbol;              // e.g., "afWETH"
-        address baseAsset;          // e.g., WETH
-        address quoteAsset;         // e.g., USDC
-        PoolKey poolKey;            // Uniswap V4 pool key
-        uint256 targetLeverage;     // e.g., 2e18 = 2x
-        uint256 maxLeverage;        // e.g., 2.5e18 = 2.5x
+        string name; // e.g., "Apollos WETH Vault"
+        string symbol; // e.g., "afWETH"
+        address baseAsset; // e.g., WETH
+        address quoteAsset; // e.g., USDC
+        PoolKey poolKey; // Uniswap V4 pool key
+        uint256 targetLeverage; // e.g., 2e18 = 2x
+        uint256 maxLeverage; // e.g., 2.5e18 = 2.5x
     }
 
     /// @notice Vault info in registry
     struct VaultInfo {
-        address vault;              // Vault contract address
-        address baseAsset;          // Base asset address
-        address quoteAsset;         // Quote asset address
-        string symbol;              // Vault share symbol
-        bool isActive;              // Whether vault is active
-        uint256 createdAt;          // Creation timestamp
+        address vault; // Vault contract address
+        address baseAsset; // Base asset address
+        address quoteAsset; // Quote asset address
+        string symbol; // Vault share symbol
+        bool isActive; // Whether vault is active
+        uint256 createdAt; // Creation timestamp
     }
 
     // ============ Events ============
-    
+
     event VaultCreated(
         address indexed vault,
         address indexed baseAsset,
@@ -45,14 +45,14 @@ interface IApollosFactory {
         string symbol,
         address creator
     );
-    
+
     event VaultDeactivated(address indexed vault);
     event VaultReactivated(address indexed vault);
     event ProtocolFeeUpdated(uint256 oldFee, uint256 newFee);
     event TreasuryUpdated(address indexed oldTreasury, address indexed newTreasury);
 
     // ============ Errors ============
-    
+
     error VaultAlreadyExists();
     error VaultNotFound();
     error InvalidAsset();

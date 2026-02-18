@@ -20,9 +20,9 @@ interface IMockUniswapPool {
         uint256 reserve0;
         uint256 reserve1;
         uint256 totalLiquidity;
-        uint24 baseFee;         // Base swap fee in bps (e.g., 30 = 0.3%)
-        int24 tickSpacing;      // V4 compatibility
-        IHooks hooks;           // LVRHook address
+        uint24 baseFee; // Base swap fee in bps (e.g., 30 = 0.3%)
+        int24 tickSpacing; // V4 compatibility
+        IHooks hooks; // LVRHook address
         bool isActive;
     }
 
@@ -43,11 +43,7 @@ interface IMockUniswapPool {
     );
 
     event LiquidityModified(
-        PoolId indexed id,
-        address indexed provider,
-        int256 liquidityDelta,
-        uint256 amount0,
-        uint256 amount1
+        PoolId indexed id, address indexed provider, int256 liquidityDelta, uint256 amount0, uint256 amount1
     );
 
     event Swap(
@@ -78,7 +74,7 @@ interface IMockUniswapPool {
     error HookCallFailed();
 
     // ============ Pool Management (V4 Style) ============
-    
+
     /**
      * @notice Initialize a new pool (V4 style)
      * @param key The PoolKey containing currencies, fee, tickSpacing, and hooks
@@ -130,12 +126,9 @@ interface IMockUniswapPool {
      * @return amount0 Amount of currency0 received
      * @return amount1 Amount of currency1 received
      */
-    function removeLiquidity(
-        PoolKey memory key,
-        uint256 liquidity,
-        uint256 amount0Min,
-        uint256 amount1Min
-    ) external returns (uint256 amount0, uint256 amount1);
+    function removeLiquidity(PoolKey memory key, uint256 liquidity, uint256 amount0Min, uint256 amount1Min)
+        external
+        returns (uint256 amount0, uint256 amount1);
 
     /**
      * @notice Get liquidity position for a provider
@@ -143,10 +136,7 @@ interface IMockUniswapPool {
      * @param provider Address of the liquidity provider
      * @return position The liquidity position
      */
-    function getPosition(
-        PoolId id,
-        address provider
-    ) external view returns (LiquidityPosition memory position);
+    function getPosition(PoolId id, address provider) external view returns (LiquidityPosition memory position);
 
     // ============ Swap Functions (V4 Style with Hook) ============
 
@@ -159,12 +149,9 @@ interface IMockUniswapPool {
      * @return amountIn Amount of input tokens
      * @return amountOut Amount of output tokens
      */
-    function swap(
-        PoolKey memory key,
-        bool zeroForOne,
-        int256 amountSpecified,
-        uint160 sqrtPriceLimitX96
-    ) external returns (uint256 amountIn, uint256 amountOut);
+    function swap(PoolKey memory key, bool zeroForOne, int256 amountSpecified, uint160 sqrtPriceLimitX96)
+        external
+        returns (uint256 amountIn, uint256 amountOut);
 
     /**
      * @notice Get quote for swap (includes hook fee calculation)
@@ -174,11 +161,10 @@ interface IMockUniswapPool {
      * @return amountOut Expected output amount
      * @return feeAmount Fee amount deducted
      */
-    function getSwapQuote(
-        PoolKey memory key,
-        bool zeroForOne,
-        uint256 amountIn
-    ) external view returns (uint256 amountOut, uint256 feeAmount);
+    function getSwapQuote(PoolKey memory key, bool zeroForOne, uint256 amountIn)
+        external
+        view
+        returns (uint256 amountOut, uint256 feeAmount);
 
     // ============ Vault Whitelist (Restricted Deposit) ============
 
@@ -221,8 +207,5 @@ interface IMockUniswapPool {
      * @return amount0 Value in currency0 (e.g., WETH)
      * @return amount1 Value in currency1 (e.g., USDC)
      */
-    function getPositionValue(PoolId id, address provider) 
-        external 
-        view 
-        returns (uint256 amount0, uint256 amount1);
+    function getPositionValue(PoolId id, address provider) external view returns (uint256 amount0, uint256 amount1);
 }

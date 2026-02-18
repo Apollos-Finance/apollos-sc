@@ -27,55 +27,54 @@ contract MockUniswapPoolTest is Test {
     MockToken public usdc;
     MockUniswapPool public pool;
     LVRHook public lvrHook;
-    
+
     PoolKey public poolKey;
     PoolId public poolId;
-    
+
     address public owner = makeAddr("owner");
     address public vault = makeAddr("vault");
     address public user = makeAddr("user");
 
     function setUp() public {
         vm.startPrank(owner);
-        
+
         // Deploy tokens
         weth = new MockToken("Wrapped Ether", "WETH", 18, true);
         usdc = new MockToken("USD Coin", "USDC", 6, false);
-        
+
         // Deploy pool
         pool = new MockUniswapPool();
-        
+
         // Deploy LVRHook
         lvrHook = new LVRHook(address(pool));
-        
+
         // Create PoolKey (currency0 must be < currency1)
-        (address token0, address token1) = address(weth) < address(usdc) 
-            ? (address(weth), address(usdc)) 
-            : (address(usdc), address(weth));
-            
+        (address token0, address token1) =
+            address(weth) < address(usdc) ? (address(weth), address(usdc)) : (address(usdc), address(weth));
+
         poolKey = PoolKey({
             currency0: Currency.wrap(token0),
             currency1: Currency.wrap(token1),
-            fee: 3000,          // 0.3% = 3000 in V4 format
+            fee: 3000, // 0.3% = 3000 in V4 format
             tickSpacing: 60,
             hooks: IHooks(address(lvrHook))
         });
-        
+
         poolId = poolKey.toId();
-        
+
         // Initialize pool
         pool.initialize(poolKey);
-        
+
         // Whitelist vault
         pool.setWhitelistedVault(vault, true);
         lvrHook.setWhitelistedVault(vault, true);
-        
+
         vm.stopPrank();
-        
+
         // Mint tokens to vault for testing
         weth.mintTo(vault, 1000 ether);
         usdc.mintTo(vault, 1_000_000 * 1e6);
-        
+
         // Mint tokens to user for swap testing
         weth.mintTo(user, 100 ether);
         usdc.mintTo(user, 100_000 * 1e6);
@@ -85,7 +84,7 @@ contract MockUniswapPoolTest is Test {
 
     function test_PoolInitialized() public view {
         IMockUniswapPool.PoolState memory state = pool.getPoolState(poolId);
-        
+
         assertTrue(state.isActive);
         assertEq(state.baseFee, 3000);
         assertEq(address(state.hooks), address(lvrHook));
@@ -101,35 +100,30 @@ contract MockUniswapPoolTest is Test {
 
     function test_AddLiquidity() public {
         vm.startPrank(vault);
-        
+
         // Approve tokens
         weth.approve(address(pool), 100 ether);
         usdc.approve(address(pool), 100_000 * 1e6);
-        
+
         // Add liquidity
-        (uint256 amount0, uint256 amount1, uint256 liquidity) = pool.addLiquidity(
-            poolKey,
-            100 ether,
-            100_000 * 1e6,
-            0,
-            0
-        );
-        
+        (uint256 amount0, uint256 amount1, uint256 liquidity) =
+            pool.addLiquidity(poolKey, 100 ether, 100_000 * 1e6, 0, 0);
+
         assertTrue(liquidity > 0);
         console.log("Liquidity minted:", liquidity);
-        
+
         vm.stopPrank();
     }
 
     function test_AddLiquidityNonWhitelistedReverts() public {
         vm.startPrank(user);
-        
+
         weth.approve(address(pool), 10 ether);
         usdc.approve(address(pool), 10_000 * 1e6);
-        
+
         vm.expectRevert();
         pool.addLiquidity(poolKey, 10 ether, 10_000 * 1e6, 0, 0);
-        
+
         vm.stopPrank();
     }
 
@@ -138,17 +132,17 @@ contract MockUniswapPoolTest is Test {
         vm.startPrank(vault);
         weth.approve(address(pool), 100 ether);
         usdc.approve(address(pool), 100_000 * 1e6);
-        
+
         (,, uint256 liquidity) = pool.addLiquidity(poolKey, 100 ether, 100_000 * 1e6, 0, 0);
-        
+
         // Remove half
         (uint256 amount0, uint256 amount1) = pool.removeLiquidity(poolKey, liquidity / 2, 0, 0);
-        
+
         assertTrue(amount0 > 0);
         assertTrue(amount1 > 0);
         console.log("Received token0:", amount0);
         console.log("Received token1:", amount1);
-        
+
         vm.stopPrank();
     }
 
@@ -161,35 +155,36 @@ contract MockUniswapPoolTest is Test {
         usdc.approve(address(pool), 100_000 * 1e6);
         pool.addLiquidity(poolKey, 100 ether, 100_000 * 1e6, 0, 0);
         vm.stopPrank();
-        
+
         // User swaps
         vm.startPrank(user);
-        
+
         address token0 = Currency.unwrap(poolKey.currency0);
         address token1 = Currency.unwrap(poolKey.currency1);
-        
+
         // Use IERC20 to avoid payable conversion issue
         IERC20(token0).approve(address(pool), 10 ether);
-        
+
         uint256 balanceBefore = IERC20(token1).balanceOf(user);
-        
+
         // Swap token0 -> token1 (zeroForOne = true, negative = exactIn)
-        (uint256 amountIn, uint256 amountOut) = pool.swap(
-            poolKey,
-            true,           // zeroForOne
-            -10 ether,      // exactIn (negative)
-            0               // sqrtPriceLimitX96 (ignored)
-        );
-        
+        (uint256 amountIn, uint256 amountOut) =
+            pool.swap(
+                poolKey,
+                true, // zeroForOne
+                -10 ether, // exactIn (negative)
+                0 // sqrtPriceLimitX96 (ignored)
+            );
+
         uint256 balanceAfter = IERC20(token1).balanceOf(user);
-        
+
         assertEq(amountIn, 10 ether);
         assertTrue(amountOut > 0);
         assertEq(balanceAfter - balanceBefore, amountOut);
-        
+
         console.log("Swapped in:", amountIn);
         console.log("Received out:", amountOut);
-        
+
         vm.stopPrank();
     }
 
@@ -202,21 +197,21 @@ contract MockUniswapPoolTest is Test {
         usdc.approve(address(pool), 100_000 * 1e6);
         pool.addLiquidity(poolKey, 100 ether, 100_000 * 1e6, 0, 0);
         vm.stopPrank();
-        
+
         // Owner sets high dynamic fee (simulating high volatility)
         vm.prank(owner);
         lvrHook.setDynamicFee(poolId, 100000); // 10% fee
-        
+
         // Swap with high fee
         vm.startPrank(user);
         address token0 = Currency.unwrap(poolKey.currency0);
         IERC20(token0).approve(address(pool), 10 ether);
-        
+
         (uint256 amountIn, uint256 amountOut) = pool.swap(poolKey, true, -10 ether, 0);
-        
+
         // With 10% fee, output should be significantly less
         console.log("With 10% fee - In:", amountIn, "Out:", amountOut);
-        
+
         vm.stopPrank();
     }
 
@@ -230,7 +225,7 @@ contract MockUniswapPoolTest is Test {
     function test_WhitelistVault() public {
         assertTrue(pool.isWhitelistedVault(vault));
         assertFalse(pool.isWhitelistedVault(user));
-        
+
         vm.prank(owner);
         pool.setWhitelistedVault(user, true);
         assertTrue(pool.isWhitelistedVault(user));
@@ -245,7 +240,7 @@ contract MockUniswapPoolTest is Test {
         usdc.approve(address(pool), 100_000 * 1e6);
         pool.addLiquidity(poolKey, 100 ether, 100_000 * 1e6, 0, 0);
         vm.stopPrank();
-        
+
         uint256 price = pool.getPrice(poolId);
         assertTrue(price > 0);
         console.log("Price:", price);
@@ -258,7 +253,7 @@ contract MockUniswapPoolTest is Test {
         usdc.approve(address(pool), 100_000 * 1e6);
         pool.addLiquidity(poolKey, 100 ether, 100_000 * 1e6, 0, 0);
         vm.stopPrank();
-        
+
         (uint256 reserve0, uint256 reserve1) = pool.getReserves(poolId);
         assertTrue(reserve0 > 0);
         assertTrue(reserve1 > 0);

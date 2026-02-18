@@ -18,30 +18,30 @@ import {Client} from "@chainlink/contracts-ccip/src/v0.8/ccip/libraries/Client.s
  *      - WETH wrapping
  *      - Vault mappings
  *      - Local deposit/withdraw
- *      
+ *
  *      Only function: Bridge USDC to Arbitrum → deposit to vault
  */
 contract SourceChainRouter is Ownable, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
     // ============ Immutables ============
-    
+
     /// @notice Chainlink CCIP Router on this chain
     address public immutable ccipRouter;
 
     // ============ State Variables ============
-    
+
     /// @notice Destination CCIPReceiver address on Arbitrum
     address public destinationReceiver;
-    
+
     /// @notice Supported destination chain selectors
     mapping(uint64 => bool) public supportedChains;
-    
+
     /// @notice Supported assets for bridging
     mapping(address => bool) public supportedAssets;
 
     // ============ Events ============
-    
+
     event CrossChainBridgeInitiated(
         bytes32 indexed messageId,
         uint64 indexed destinationChain,
@@ -52,13 +52,13 @@ contract SourceChainRouter is Ownable, ReentrancyGuard {
         address targetBaseAsset,
         uint256 minShares
     );
-    
+
     event DestinationReceiverUpdated(address indexed oldReceiver, address indexed newReceiver);
     event SupportedChainUpdated(uint64 indexed chainSelector, bool supported);
     event SupportedAssetUpdated(address indexed asset, bool supported);
 
     // ============ Errors ============
-    
+
     error ZeroAddress();
     error ZeroAmount();
     error InvalidChainSelector();
@@ -66,14 +66,14 @@ contract SourceChainRouter is Ownable, ReentrancyGuard {
     error InsufficientFee(uint256 required, uint256 provided);
 
     // ============ Constructor ============
-    
+
     constructor(address _ccipRouter) Ownable(msg.sender) {
         if (_ccipRouter == address(0)) revert ZeroAddress();
         ccipRouter = _ccipRouter;
     }
 
     // ============ Main Function ============
-    
+
     /**
      * @notice Bridge asset to Arbitrum Sepolia
      * @param asset Token address to bridge (e.g., USDC)
@@ -96,71 +96,56 @@ contract SourceChainRouter is Ownable, ReentrancyGuard {
         if (receiver == address(0)) revert ZeroAddress();
         if (!supportedChains[destinationChain]) revert InvalidChainSelector();
         if (!supportedAssets[asset]) revert UnsupportedAsset();
-        
+
         // 1. Transfer asset from user to this contract
         IERC20(asset).safeTransferFrom(msg.sender, address(this), amount);
-        
+
         // 2. Approve CCIP router
         IERC20(asset).safeIncreaseAllowance(ccipRouter, amount);
-        
+
         // 3. Encode destination deposit data (must match CCIPReceiver decoding)
         // Order: sourceAsset, amount, minShares, receiver, originalSender, targetBaseAsset
         bytes memory depositData = abi.encode(
-            asset,              // sourceAsset (USDC on Base)
-            amount,             // amount to bridge
-            minShares,          // minimum vault shares (slippage protection)
-            receiver,           // beneficiary on Arbitrum
-            msg.sender,         // originalSender (for tracking)
-            targetBaseAsset     // target vault base asset (WETH/WBTC/LINK)
+            asset, // sourceAsset (USDC on Base)
+            amount, // amount to bridge
+            minShares, // minimum vault shares (slippage protection)
+            receiver, // beneficiary on Arbitrum
+            msg.sender, // originalSender (for tracking)
+            targetBaseAsset // target vault base asset (WETH/WBTC/LINK)
         );
-        
+
         // 4. Build CCIP message
         Client.EVMTokenAmount[] memory tokenAmounts = new Client.EVMTokenAmount[](1);
-        tokenAmounts[0] = Client.EVMTokenAmount({
-            token: asset,
-            amount: amount
-        });
-        
+        tokenAmounts[0] = Client.EVMTokenAmount({token: asset, amount: amount});
+
         Client.EVM2AnyMessage memory message = Client.EVM2AnyMessage({
             receiver: abi.encode(destinationReceiver),
             data: depositData,
             tokenAmounts: tokenAmounts,
-            extraArgs: Client._argsToBytes(
-                Client.EVMExtraArgsV1({gasLimit: 500_000})
-            ),
-            feeToken: address(0)  // Pay fee in native token
+            extraArgs: Client._argsToBytes(Client.EVMExtraArgsV1({gasLimit: 500_000})),
+            feeToken: address(0) // Pay fee in native token
         });
-        
+
         // 5. Calculate fee
         uint256 fee = IRouterClient(ccipRouter).getFee(destinationChain, message);
         if (msg.value < fee) revert InsufficientFee(fee, msg.value);
-        
+
         // 6. Send via CCIP
-        messageId = IRouterClient(ccipRouter).ccipSend{value: fee}(
-            destinationChain,
-            message
-        );
-        
+        messageId = IRouterClient(ccipRouter).ccipSend{value: fee}(destinationChain, message);
+
         // 7. Refund excess fee
         if (msg.value > fee) {
-            (bool success, ) = msg.sender.call{value: msg.value - fee}("");
+            (bool success,) = msg.sender.call{value: msg.value - fee}("");
             require(success, "Refund failed");
         }
-        
+
         emit CrossChainBridgeInitiated(
-            messageId,
-            destinationChain,
-            msg.sender,
-            asset,
-            amount,
-            receiver,
-            targetBaseAsset,
-            minShares
+            messageId, destinationChain, msg.sender, asset, amount, receiver, targetBaseAsset, minShares
         );
     }
 
     // ============ View Functions ============
-    
+
     /**
      * @notice Get CCIP fee estimate for bridging
      * @param destinationChain CCIP chain selector
@@ -179,51 +164,46 @@ contract SourceChainRouter is Ownable, ReentrancyGuard {
     ) external view returns (uint256 fee) {
         if (!supportedChains[destinationChain]) revert InvalidChainSelector();
         if (!supportedAssets[asset]) revert UnsupportedAsset();
-        
+
         Client.EVMTokenAmount[] memory tokenAmounts = new Client.EVMTokenAmount[](1);
-        tokenAmounts[0] = Client.EVMTokenAmount({
-            token: asset,
-            amount: amount
-        });
-        
+        tokenAmounts[0] = Client.EVMTokenAmount({token: asset, amount: amount});
+
         // Encode with 6 fields to match actual message
         bytes memory depositData = abi.encode(
             asset,
             amount,
             minShares,
-            msg.sender,  // receiver placeholder
-            msg.sender,  // originalSender placeholder
+            msg.sender, // receiver placeholder
+            msg.sender, // originalSender placeholder
             targetBaseAsset
         );
-        
+
         Client.EVM2AnyMessage memory message = Client.EVM2AnyMessage({
             receiver: abi.encode(destinationReceiver),
             data: depositData,
             tokenAmounts: tokenAmounts,
-            extraArgs: Client._argsToBytes(
-                Client.EVMExtraArgsV1({gasLimit: 500_000})
-            ),
+            extraArgs: Client._argsToBytes(Client.EVMExtraArgsV1({gasLimit: 500_000})),
             feeToken: address(0)
         });
-        
+
         return IRouterClient(ccipRouter).getFee(destinationChain, message);
     }
 
     // ============ Admin Functions ============
-    
+
     /**
      * @notice Set destination CCIPReceiver address on Arbitrum
      * @param _receiver CCIPReceiver contract address
      */
     function setDestinationReceiver(address _receiver) external onlyOwner {
         if (_receiver == address(0)) revert ZeroAddress();
-        
+
         address oldReceiver = destinationReceiver;
         destinationReceiver = _receiver;
-        
+
         emit DestinationReceiverUpdated(oldReceiver, _receiver);
     }
-    
+
     /**
      * @notice Enable/disable destination chain
      * @param chainSelector CCIP chain selector
@@ -233,7 +213,7 @@ contract SourceChainRouter is Ownable, ReentrancyGuard {
         supportedChains[chainSelector] = supported;
         emit SupportedChainUpdated(chainSelector, supported);
     }
-    
+
     /**
      * @notice Enable/disable asset for bridging
      * @param asset Token address
@@ -244,7 +224,7 @@ contract SourceChainRouter is Ownable, ReentrancyGuard {
         supportedAssets[asset] = supported;
         emit SupportedAssetUpdated(asset, supported);
     }
-    
+
     /**
      * @notice Rescue stuck tokens (emergency)
      * @param token Token address
@@ -253,16 +233,16 @@ contract SourceChainRouter is Ownable, ReentrancyGuard {
     function rescueTokens(address token, uint256 amount) external onlyOwner {
         IERC20(token).safeTransfer(owner(), amount);
     }
-    
+
     /**
      * @notice Rescue stuck ETH (emergency)
      */
     function rescueETH() external onlyOwner {
-        (bool success, ) = owner().call{value: address(this).balance}("");
+        (bool success,) = owner().call{value: address(this).balance}("");
         require(success, "ETH rescue failed");
     }
-    
+
     // ============ Receive ETH ============
-    
+
     receive() external payable {}
 }

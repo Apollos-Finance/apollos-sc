@@ -11,17 +11,17 @@ import {MockToken} from "../src/mocks/MockToken.sol";
 contract MockTokenTest is Test {
     MockToken public weth;
     MockToken public usdc;
-    
+
     address public alice = makeAddr("alice");
     address public bob = makeAddr("bob");
 
     function setUp() public {
         // Deploy WETH (isWETH = true)
         weth = new MockToken("Wrapped Ether", "WETH", 18, true);
-        
+
         // Deploy USDC (isWETH = false)
         usdc = new MockToken("USD Coin", "USDC", 6, false);
-        
+
         // Fund Alice with ETH for testing
         vm.deal(alice, 100 ether);
     }
@@ -43,7 +43,7 @@ contract MockTokenTest is Test {
     function test_MintTo() public {
         weth.mintTo(alice, 100 ether);
         assertEq(weth.balanceOf(alice), 100 ether);
-        
+
         usdc.mintTo(bob, 1000 * 1e6);
         assertEq(usdc.balanceOf(bob), 1000 * 1e6);
     }
@@ -53,24 +53,24 @@ contract MockTokenTest is Test {
     function test_Faucet() public {
         vm.prank(alice);
         weth.faucet(100);
-        
+
         assertEq(weth.balanceOf(alice), 100 ether);
     }
 
     function test_FaucetCooldown() public {
         vm.startPrank(alice);
-        
+
         // First claim
         weth.faucet(100);
-        
+
         // Second claim should fail
         vm.expectRevert();
         weth.faucet(100);
-        
+
         // After cooldown, should work
         vm.warp(block.timestamp + 1 days + 1);
         weth.faucet(50);
-        
+
         assertEq(weth.balanceOf(alice), 150 ether);
         vm.stopPrank();
     }
@@ -86,7 +86,7 @@ contract MockTokenTest is Test {
     function test_WETHDeposit() public {
         vm.prank(alice);
         weth.deposit{value: 10 ether}();
-        
+
         assertEq(weth.balanceOf(alice), 10 ether);
         assertEq(address(weth).balance, 10 ether);
     }
@@ -95,7 +95,7 @@ contract MockTokenTest is Test {
         vm.prank(alice);
         (bool success,) = address(weth).call{value: 5 ether}("");
         assertTrue(success);
-        
+
         assertEq(weth.balanceOf(alice), 5 ether);
     }
 
@@ -103,10 +103,10 @@ contract MockTokenTest is Test {
         // First deposit
         vm.startPrank(alice);
         weth.deposit{value: 10 ether}();
-        
+
         uint256 balanceBefore = alice.balance;
         weth.withdraw(5 ether);
-        
+
         assertEq(weth.balanceOf(alice), 5 ether);
         assertEq(alice.balance, balanceBefore + 5 ether);
         vm.stopPrank();
@@ -123,7 +123,7 @@ contract MockTokenTest is Test {
     function test_USDCRejectsWithdraw() public {
         // Mint some USDC first
         usdc.mintTo(alice, 1000 * 1e6);
-        
+
         vm.prank(alice);
         vm.expectRevert(MockToken.NotWETH.selector);
         usdc.withdraw(100 * 1e6);

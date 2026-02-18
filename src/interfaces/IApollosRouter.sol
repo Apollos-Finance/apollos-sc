@@ -11,51 +11,42 @@ pragma solidity ^0.8.20;
  */
 interface IApollosRouter {
     // ============ Structs ============
-    
+
     /// @notice Parameters for deposit operation
     struct DepositParams {
-        address asset;          // Asset to deposit (WETH, WBTC, etc.)
-        uint256 amount;         // Amount to deposit
-        uint256 minShares;      // Minimum shares to receive (slippage)
-        address receiver;       // Address to receive shares
+        address asset; // Asset to deposit (WETH, WBTC, etc.)
+        uint256 amount; // Amount to deposit
+        uint256 minShares; // Minimum shares to receive (slippage)
+        address receiver; // Address to receive shares
     }
 
     /// @notice Parameters for withdraw operation
     struct WithdrawParams {
-        address vault;          // Vault to withdraw from
-        uint256 shares;         // Shares to burn
-        uint256 minAmount;      // Minimum asset to receive
-        address receiver;       // Address to receive assets
+        address vault; // Vault to withdraw from
+        uint256 shares; // Shares to burn
+        uint256 minAmount; // Minimum asset to receive
+        address receiver; // Address to receive assets
     }
 
     /// @notice Parameters for cross-chain deposit
     struct CrossChainDepositParams {
-        uint64 destinationChainSelector;  // CCIP chain selector
-        address destinationRouter;        // CCIPReceiver on destination chain
-        address asset;                    // Asset to send via CCIP (e.g., USDC)
-        uint256 amount;                   // Amount to deposit
-        uint256 minShares;                // Minimum shares
-        address receiver;                 // Receiver on destination chain
-        address targetBaseAsset;          // Target vault base asset on dest chain (WETH/WBTC/LINK)
+        uint64 destinationChainSelector; // CCIP chain selector
+        address destinationRouter; // CCIPReceiver on destination chain
+        address asset; // Asset to send via CCIP (e.g., USDC)
+        uint256 amount; // Amount to deposit
+        uint256 minShares; // Minimum shares
+        address receiver; // Receiver on destination chain
+        address targetBaseAsset; // Target vault base asset on dest chain (WETH/WBTC/LINK)
     }
 
     // ============ Events ============
-    
+
     event Deposit(
-        address indexed user,
-        address indexed vault,
-        address indexed asset,
-        uint256 amount,
-        uint256 sharesReceived
+        address indexed user, address indexed vault, address indexed asset, uint256 amount, uint256 sharesReceived
     );
-    
-    event Withdraw(
-        address indexed user,
-        address indexed vault,
-        uint256 sharesBurned,
-        uint256 amountReceived
-    );
-    
+
+    event Withdraw(address indexed user, address indexed vault, uint256 sharesBurned, uint256 amountReceived);
+
     event CrossChainDepositInitiated(
         bytes32 indexed messageId,
         uint64 indexed destinationChainSelector,
@@ -63,7 +54,7 @@ interface IApollosRouter {
         address asset,
         uint256 amount
     );
-    
+
     event CrossChainDepositReceived(
         bytes32 indexed messageId,
         uint64 indexed sourceChainSelector,
@@ -73,7 +64,7 @@ interface IApollosRouter {
     );
 
     // ============ Errors ============
-    
+
     error ZeroAmount();
     error ZeroAddress();
     error VaultNotFound();
@@ -92,9 +83,7 @@ interface IApollosRouter {
      * @return vault Address of vault deposited to
      * @return shares Amount of shares received
      */
-    function deposit(DepositParams calldata params) 
-        external 
-        returns (address vault, uint256 shares);
+    function deposit(DepositParams calldata params) external returns (address vault, uint256 shares);
 
     /**
      * @notice Deposit ETH into WETH vault
@@ -102,11 +91,7 @@ interface IApollosRouter {
      * @return vault Vault address
      * @return shares Shares received
      */
-    function depositETH(uint256 minShares) 
-        external 
-        payable 
-        returns (address vault, uint256 shares);
-
+    function depositETH(uint256 minShares) external payable returns (address vault, uint256 shares);
 
     // ============ Withdraw Functions ============
 
@@ -115,9 +100,7 @@ interface IApollosRouter {
      * @param params Withdraw parameters
      * @return amount Amount of assets received
      */
-    function withdraw(WithdrawParams calldata params) 
-        external 
-        returns (uint256 amount);
+    function withdraw(WithdrawParams calldata params) external returns (uint256 amount);
 
     /**
      * @notice Withdraw from vault and receive ETH (for WETH vault)
@@ -126,11 +109,7 @@ interface IApollosRouter {
      * @param minAmount Minimum ETH to receive
      * @return amount ETH received
      */
-    function withdrawETH(
-        address vault,
-        uint256 shares,
-        uint256 minAmount
-    ) external returns (uint256 amount);
+    function withdrawETH(address vault, uint256 shares, uint256 minAmount) external returns (uint256 amount);
 
     // ============ Cross-Chain Functions (CCIP) ============
 
@@ -139,10 +118,7 @@ interface IApollosRouter {
      * @param params Cross-chain deposit parameters
      * @return messageId CCIP message ID
      */
-    function depositCrossChain(CrossChainDepositParams calldata params) 
-        external 
-        payable 
-        returns (bytes32 messageId);
+    function depositCrossChain(CrossChainDepositParams calldata params) external payable returns (bytes32 messageId);
 
     /**
      * @notice Get fee for cross-chain deposit
@@ -151,11 +127,10 @@ interface IApollosRouter {
      * @param amount Amount to deposit
      * @return fee Required CCIP fee in native token
      */
-    function getCrossChainFee(
-        uint64 destinationChainSelector,
-        address asset,
-        uint256 amount
-    ) external view returns (uint256 fee);
+    function getCrossChainFee(uint64 destinationChainSelector, address asset, uint256 amount)
+        external
+        view
+        returns (uint256 fee);
 
     // ============ View Functions ============
 
@@ -179,10 +154,7 @@ interface IApollosRouter {
      * @return vault Vault that would be used
      * @return shares Expected shares
      */
-    function previewDeposit(address asset, uint256 amount) 
-        external 
-        view 
-        returns (address vault, uint256 shares);
+    function previewDeposit(address asset, uint256 amount) external view returns (address vault, uint256 shares);
 
     /**
      * @notice Preview withdraw - get expected amount
@@ -190,10 +162,7 @@ interface IApollosRouter {
      * @param shares Shares to burn
      * @return amount Expected asset amount
      */
-    function previewWithdraw(address vault, uint256 shares) 
-        external 
-        view 
-        returns (uint256 amount);
+    function previewWithdraw(address vault, uint256 shares) external view returns (uint256 amount);
 
     /**
      * @notice Get factory address

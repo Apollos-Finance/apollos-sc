@@ -6,14 +6,14 @@ pragma solidity ^0.8.20;
  * @notice Interface for receiving cross-chain deposits via Chainlink CCIP
  * @dev Deployed on destination chain (Arbitrum) to process incoming CCIP messages.
  *      Supports Auto-Zapping: swap received USDC → target base asset → deposit to vault.
- * 
+ *
  * Data encoding format (must match ApollosRouter):
  *   abi.encode(sourceAsset, amount, minShares, receiver, originalSender, targetBaseAsset)
  *   Types: (address, uint256, uint256, address, address, address)
  */
 interface IApollosCCIPReceiver {
     // ============ Events ============
-    
+
     event CrossChainDepositReceived(
         bytes32 indexed messageId,
         uint64 indexed sourceChainSelector,
@@ -32,21 +32,11 @@ interface IApollosCCIPReceiver {
         string reason
     );
 
-    event SourceChainConfigured(
-        uint64 indexed chainSelector,
-        address indexed senderAddress,
-        bool enabled
-    );
+    event SourceChainConfigured(uint64 indexed chainSelector, address indexed senderAddress, bool enabled);
 
-    event SwapExecuted(
-        address indexed fromToken,
-        address indexed toToken,
-        uint256 amountIn,
-        uint256 amountOut
-    );
+    event SwapExecuted(address indexed fromToken, address indexed toToken, uint256 amountIn, uint256 amountOut);
 
     // ============ Errors ============
-    
 
     error InvalidSourceChain();
     error InvalidSender();
@@ -63,11 +53,7 @@ interface IApollosCCIPReceiver {
      * @param senderAddress Authorized sender (ApollosRouter) on source chain
      * @param enabled Enable/disable this source
      */
-    function setAuthorizedSource(
-        uint64 sourceChainSelector,
-        address senderAddress,
-        bool enabled
-    ) external;
+    function setAuthorizedSource(uint64 sourceChainSelector, address senderAddress, bool enabled) external;
 
     /**
      * @notice Set asset mapping for cross-chain tokens
@@ -98,12 +84,7 @@ interface IApollosCCIPReceiver {
 
     // ============ View Functions ============
 
-    function isAuthorizedSource(
-        uint64 chainSelector,
-        address sender
-    ) external view returns (bool authorized);
+    function isAuthorizedSource(uint64 chainSelector, address sender) external view returns (bool authorized);
 
     function getLocalAsset(address sourceAsset) external view returns (address localAsset);
-
-
 }
