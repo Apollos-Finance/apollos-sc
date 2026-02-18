@@ -2,6 +2,7 @@
 pragma solidity ^0.8.20;
 
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import {ERC4626} from "@openzeppelin/contracts/token/ERC20/extensions/ERC4626.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
@@ -19,31 +20,19 @@ import {IMockUniswapPool} from "../interfaces/IMockUniswapPool.sol";
 
 /**
  * @title ApollosVault
- * @notice Core vault contract implementing 2x leverage strategy with LVR protection
- * @dev The "heart" of Apollos Finance:
- *      1. Receives user deposits (WETH)
- *      2. Borrows quote asset (USDC) from MockAavePool via Credit Delegation
- *      3. Provides liquidity to MockUniswapPool (protected by LVRHook)
- *      4. Mints afTOKEN shares to users
- * 
- * Integration:
- *      - MockAavePool: Undercollateralized borrowing (vault is whitelisted)
- *      - MockUniswapPool: LP deposits (only this vault can add liquidity)
- *      - LVRHook: Dynamic fee protection during high volatility
- *      - Chainlink Workflow: Triggers rebalance() when health factor is low
+ * @notice Hybrid ERC4626 Vault: Supports both On-Chain Math (Testing) and Off-Chain Accountant (Production)
  */
-contract ApollosVault is IApollosVault, ERC20, Ownable, ReentrancyGuard {
+contract ApollosVault is IApollosVault, ERC4626, Ownable, ReentrancyGuard {
     using SafeERC20 for IERC20;
     using PoolIdLibrary for PoolKey;
 
     // ============ Constants ============
     uint256 public constant PRECISION = 1e18;
     uint256 public constant BPS = 10000;
-    uint256 public constant MIN_DEPOSIT = 1e15; // 0.001 base asset
+    uint256 public constant MIN_DEPOSIT = 1e15; 
     
     // ============ Immutables ============
-    IERC20 public immutable baseAsset;      // e.g., WETH
-    IERC20 public immutable quoteAsset;     // e.g., USDC
+    IERC20 public immutable quoteAsset;     
     IMockAavePool public immutable aavePool;
     IMockUniswapPool public immutable uniswapPool;
     PoolKey public poolKey;
@@ -52,18 +41,18 @@ contract ApollosVault is IApollosVault, ERC20, Ownable, ReentrancyGuard {
     VaultConfig public config;
     bool public paused;
     
-    /// @notice Authorized rebalancers (Chainlink Workflow)
     mapping(address => bool) public authorizedRebalancers;
     
-    /// @notice LP token amount held by vault
     uint256 public lpTokenBalance;
-    
-    /// @notice Protocol fee in basis points (e.g., 100 = 1%)
     uint256 public protocolFee;
     address public treasury;
-    
-    /// @notice Accumulated fees pending harvest
     uint256 public pendingFees;
+
+    /// @notice Stored NAV updated by Chainlink Workflow (For Production)
+    uint256 public storedTotalAssets;
+
+    // ============ Events ============
+    event NAVUpdated(uint256 newValue, uint256 timestamp);
 
     // ============ Modifiers ============
     modifier whenNotPaused() {
@@ -89,11 +78,10 @@ contract ApollosVault is IApollosVault, ERC20, Ownable, ReentrancyGuard {
         PoolKey memory _poolKey,
         uint256 _targetLeverage,
         uint256 _maxLeverage
-    ) ERC20(_name, _symbol) Ownable(msg.sender) {
-        if (_baseAsset == address(0) || _quoteAsset == address(0)) revert ZeroAddress();
+    ) ERC4626(IERC20(_baseAsset)) ERC20(_name, _symbol) Ownable(msg.sender) {
+        if (_quoteAsset == address(0)) revert ZeroAddress();
         if (_aavePool == address(0) || _uniswapPool == address(0)) revert ZeroAddress();
         
-        baseAsset = IERC20(_baseAsset);
         quoteAsset = IERC20(_quoteAsset);
         aavePool = IMockAavePool(_aavePool);
         uniswapPool = IMockUniswapPool(_uniswapPool);
@@ -102,33 +90,58 @@ contract ApollosVault is IApollosVault, ERC20, Ownable, ReentrancyGuard {
         config = VaultConfig({
             baseAsset: _baseAsset,
             quoteAsset: _quoteAsset,
-            targetLeverage: _targetLeverage,  // e.g., 2e18 = 2x
-            maxLeverage: _maxLeverage,        // e.g., 2.5e18
-            rebalanceThreshold: 1.1e18        // Rebalance if HF < 1.1
+            targetLeverage: _targetLeverage,
+            maxLeverage: _maxLeverage,
+            rebalanceThreshold: 1.1e18
         });
         
         protocolFee = 100; // 1% default
     }
 
-    // ============ Core Functions ============
+    // ============ Accountant / NAV Functions ============
 
-    /**
-     * @notice Deposit base asset and receive vault shares
-     * @dev Flow: Transfer WETH → Borrow USDC → Add LP → Mint shares
-     */
-    function deposit(uint256 amount, uint256 minShares) 
-        external 
-        override 
-        nonReentrant 
-        whenNotPaused 
-        returns (uint256 shares) 
-    {
-        return _deposit(amount, msg.sender, minShares);
+    function updateNAV(uint256 _newTotalAssets) external onlyRebalancer {
+        storedTotalAssets = _newTotalAssets;
+        emit NAVUpdated(_newTotalAssets, block.timestamp);
     }
 
     /**
-     * @notice Deposit on behalf of another user (for CCIP receiver)
+     * @notice Hybrid Total Assets Logic
+     * @dev If storedTotalAssets is set (Production/Workflow), use it.
+     *      Otherwise, fallback to On-Chain Math (Testing).
      */
+    function totalAssets() public view override(ERC4626, IApollosVault) returns (uint256) {
+        // Mode Production: Use Off-Chain Accountant + Idle Cash
+        if (storedTotalAssets > 0) {
+            return storedTotalAssets + IERC20(asset()).balanceOf(address(this));
+        }
+        
+        // Mode Testing: Use On-Chain Calculation
+        uint256 vaultBalance = IERC20(asset()).balanceOf(address(this));
+        uint256 lpValue = _getLPValueInBase();
+        uint256 debt = _getTotalDebt();
+        
+        uint256 debtInBase = _convertQuoteToBase(debt);
+        
+        if (vaultBalance + lpValue > debtInBase) {
+            return vaultBalance + lpValue - debtInBase;
+        }
+        return 0;
+    }
+
+    // ============ Core Functions ============
+
+    // Override Deposit to maintain Leverage Strategy behavior
+    function deposit(uint256 assets, address receiver) 
+        public 
+        override(ERC4626, IApollosVault) 
+        whenNotPaused 
+        nonReentrant 
+        returns (uint256 shares) 
+    {
+        return _deposit(assets, receiver, 0);
+    }
+
     function depositFor(uint256 amount, address receiver, uint256 minShares)
         external
         override
@@ -140,52 +153,46 @@ contract ApollosVault is IApollosVault, ERC20, Ownable, ReentrancyGuard {
         return _deposit(amount, receiver, minShares);
     }
 
-    /**
-     * @notice Internal deposit logic
-     */
     function _deposit(uint256 amount, address receiver, uint256 minShares) 
         internal 
         returns (uint256 shares) 
     {
         if (amount < MIN_DEPOSIT) revert ZeroAmount();
         
-        // Calculate shares before any state changes
+        // Use ERC4626 standard preview
         shares = previewDeposit(amount);
         if (shares < minShares) revert SlippageExceeded();
         
         // Transfer base asset from user
-        baseAsset.safeTransferFrom(msg.sender, address(this), amount);
+        IERC20(asset()).safeTransferFrom(msg.sender, address(this), amount);
         
-        // Calculate borrow amount for 2x leverage
-        // For 2x: borrow equivalent value in quote asset
+        // Execute Strategy (Borrow + LP)
         uint256 borrowAmount = _calculateBorrowAmount(amount);
         
-        // Borrow quote asset from Aave (Credit Delegation)
         if (borrowAmount > 0) {
             quoteAsset.safeIncreaseAllowance(address(aavePool), borrowAmount);
             aavePool.borrow(
                 address(quoteAsset),
                 borrowAmount,
-                2,  // Variable rate
-                0,  // No referral
+                2, 
+                0, 
                 address(this)
             );
         }
         
-        // Add liquidity to Uniswap Pool
         uint256 lpReceived = _addLiquidity(amount, borrowAmount);
         lpTokenBalance += lpReceived;
+
+        if (storedTotalAssets > 0) {
+            storedTotalAssets += amount; 
+        }
         
-        // Mint shares to receiver
+        // Mint shares
         _mint(receiver, shares);
         
         emit Deposit(receiver, amount, shares, borrowAmount);
     }
 
-    /**
-     * @notice Withdraw by burning shares
-     * @dev Flow: Burn shares → Remove LP → Repay debt → Transfer WETH
-     */
     function withdraw(uint256 shares, uint256 minAmount)
         external
         override
@@ -196,44 +203,38 @@ contract ApollosVault is IApollosVault, ERC20, Ownable, ReentrancyGuard {
         if (shares == 0) revert ZeroAmount();
         if (balanceOf(msg.sender) < shares) revert InsufficientShares();
         
-        // Calculate base asset to receive
-        amount = previewWithdraw(shares);
+        amount = previewRedeem(shares);
         if (amount < minAmount) revert SlippageExceeded();
         
-        // Calculate proportional LP to remove
         uint256 lpToRemove = (lpTokenBalance * shares) / totalSupply();
         
-        // Remove liquidity from Uniswap
         (uint256 baseReceived, uint256 quoteReceived) = _removeLiquidity(lpToRemove);
         lpTokenBalance -= lpToRemove;
         
-        // Repay proportional debt to Aave
         uint256 debtToRepay = _calculateProportionalDebt(shares);
         if (debtToRepay > 0 && debtToRepay <= quoteReceived) {
             quoteAsset.safeIncreaseAllowance(address(aavePool), debtToRepay);
             aavePool.repay(address(quoteAsset), debtToRepay, 2, address(this));
         }
         
-        // Burn shares
         _burn(msg.sender, shares);
         
-        // Transfer base asset to user
-        baseAsset.safeTransfer(msg.sender, amount);
+        IERC20(asset()).safeTransfer(msg.sender, amount);
         
-        // Transfer excess quote asset if any
         uint256 excessQuote = quoteReceived > debtToRepay ? quoteReceived - debtToRepay : 0;
         if (excessQuote > 0) {
-            // Convert to base asset value and add to amount (simplified)
             quoteAsset.safeTransfer(msg.sender, excessQuote);
+        }
+
+        if (storedTotalAssets >= amount) {
+            storedTotalAssets -= amount;
+        } else {
+            storedTotalAssets = 0;
         }
         
         emit Withdraw(msg.sender, shares, amount, debtToRepay);
     }
 
-    /**
-     * @notice Rebalance vault to maintain target leverage
-     * @dev Called by Chainlink Workflow when health factor drops
-     */
     function rebalance() 
         external 
         override 
@@ -243,53 +244,32 @@ contract ApollosVault is IApollosVault, ERC20, Ownable, ReentrancyGuard {
     {
         uint256 currentLeverage = getCurrentLeverage();
         
-        // Only rebalance if needed
         if (!needsRebalance()) revert RebalanceNotNeeded();
         
         uint256 oldLeverage = currentLeverage;
-        
-        // Calculate how much LP to remove to reduce leverage
         uint256 lpToRemove = _calculateRebalanceAmount();
         
         if (lpToRemove > 0 && lpToRemove <= lpTokenBalance) {
-            // Remove some liquidity
             (uint256 baseReceived, uint256 quoteReceived) = _removeLiquidity(lpToRemove);
             lpTokenBalance -= lpToRemove;
             
-            // Use quote to repay debt
             if (quoteReceived > 0) {
                 quoteAsset.safeIncreaseAllowance(address(aavePool), quoteReceived);
                 aavePool.repay(address(quoteAsset), quoteReceived, 2, address(this));
             }
-            
-            // Keep base asset in vault for buffer
         }
         
         newLeverage = getCurrentLeverage();
-        
         emit Rebalance(oldLeverage, newLeverage, lpToRemove, block.timestamp);
     }
 
-    /**
-     * @notice Emergency withdraw without full unwinding
-     */
     function emergencyWithdraw(uint256 shares) 
         external 
         override 
         nonReentrant 
         returns (uint256 amount) 
     {
-        if (shares == 0) revert ZeroAmount();
-        if (balanceOf(msg.sender) < shares) revert InsufficientShares();
-        
-        // Simplified: return proportional base asset from vault balance
-        uint256 vaultBalance = baseAsset.balanceOf(address(this));
-        amount = (vaultBalance * shares) / totalSupply();
-        
-        _burn(msg.sender, shares);
-        baseAsset.safeTransfer(msg.sender, amount);
-        
-        emit EmergencyWithdraw(msg.sender, shares, amount);
+        return redeem(shares, msg.sender, msg.sender);
     }
 
     // ============ View Functions ============
@@ -309,50 +289,28 @@ contract ApollosVault is IApollosVault, ERC20, Ownable, ReentrancyGuard {
         });
     }
 
-    function previewDeposit(uint256 amount) public view override returns (uint256 shares) {
-        uint256 supply = totalSupply();
-        uint256 assets = totalAssets();
-        
-        if (supply == 0 || assets == 0) {
-            // First deposit: 1:1 ratio
-            shares = amount;
-        } else {
-            // Proportional to existing shares
-            shares = (amount * supply) / assets;
-        }
+    function previewDeposit(uint256 amount) public view override(ERC4626, IApollosVault) returns (uint256) {
+        return super.previewDeposit(amount);
     }
 
-    function previewWithdraw(uint256 shares) public view override returns (uint256 amount) {
-        uint256 supply = totalSupply();
-        if (supply == 0) return 0;
-        
-        // Proportional to total assets
-        amount = (shares * totalAssets()) / supply;
+    function previewWithdraw(uint256 shares) public view override(ERC4626, IApollosVault) returns (uint256) {
+        return super.previewRedeem(shares);
     }
-
+    
     function getSharePrice() external view override returns (uint256 price) {
-        uint256 supply = totalSupply();
-        if (supply == 0) return PRECISION;
-        
-        return (totalAssets() * PRECISION) / supply;
+        return convertToAssets(PRECISION);
     }
 
     function getHealthFactor() public view override returns (uint256 healthFactor) {
         (,,,,, healthFactor) = aavePool.getUserAccountData(address(this));
-        
-        // If no debt, return max
-        if (healthFactor == 0) {
-            healthFactor = type(uint256).max;
-        }
+        if (healthFactor == 0) healthFactor = type(uint256).max;
     }
 
     function getCurrentLeverage() public view override returns (uint256 leverage) {
         uint256 totalDebt = _getTotalDebt();
         uint256 assets = totalAssets();
         
-        if (assets == 0) return PRECISION; // 1x if no assets
-        
-        // Leverage = (Assets + Debt) / Assets
+        if (assets == 0) return PRECISION; 
         leverage = ((assets + totalDebt) * PRECISION) / assets;
     }
 
@@ -361,36 +319,27 @@ contract ApollosVault is IApollosVault, ERC20, Ownable, ReentrancyGuard {
         return hf < config.rebalanceThreshold && hf != type(uint256).max;
     }
 
-    function totalAssets() public view override returns (uint256) {
-        // Base asset in vault + value of LP position - debt
-        uint256 vaultBalance = baseAsset.balanceOf(address(this));
-        uint256 lpValue = _getLPValueInBase();
-        uint256 debt = _getTotalDebt();
-        
-        // Net assets = vault + LP value - debt (converted to base)
-        uint256 debtInBase = _convertQuoteToBase(debt);
-        
-        if (vaultBalance + lpValue > debtInBase) {
-            return vaultBalance + lpValue - debtInBase;
-        }
-        return 0;
+    // ============ ERC4626 Conflict Resolution ============
+    
+    function decimals() public view override(ERC4626) returns (uint8) {
+        return super.decimals();
     }
 
-    function balanceOf(address user) public view override(ERC20, IApollosVault) returns (uint256) {
-        return super.balanceOf(user);
-    }
-
-    function totalSupply() public view override(ERC20, IApollosVault) returns (uint256) {
+    function totalSupply() public view override(ERC20, IERC20, IApollosVault) returns (uint256) {
         return super.totalSupply();
+    }
+
+    function balanceOf(address account) public view override(ERC20, IERC20, IApollosVault) returns (uint256) {
+        return super.balanceOf(account);
+    }
+
+    function withdraw(uint256 assets, address receiver, address owner) public override(ERC4626) returns (uint256) {
+        revert("Use withdraw(shares, minAmount)");
     }
 
     // ============ Admin Functions ============
 
-    function updateConfig(
-        uint256 _targetLeverage,
-        uint256 _maxLeverage,
-        uint256 _rebalanceThreshold
-    ) external override onlyOwner {
+    function updateConfig(uint256 _targetLeverage, uint256 _maxLeverage, uint256 _rebalanceThreshold) external override onlyOwner {
         config.targetLeverage = _targetLeverage;
         config.maxLeverage = _maxLeverage;
         config.rebalanceThreshold = _rebalanceThreshold;
@@ -401,35 +350,28 @@ contract ApollosVault is IApollosVault, ERC20, Ownable, ReentrancyGuard {
     }
 
     function setRebalancer(address rebalancer, bool authorized) external override onlyOwner {
-        if (rebalancer == address(0)) revert ZeroAddress();
         authorizedRebalancers[rebalancer] = authorized;
     }
 
     function setTreasury(address _treasury) external onlyOwner {
-        if (_treasury == address(0)) revert ZeroAddress();
         treasury = _treasury;
     }
 
     function setProtocolFee(uint256 _fee) external onlyOwner {
-        if (_fee > 1000) revert(); // Max 10%
         protocolFee = _fee;
     }
 
-    // ============ Internal Functions ============
+    // ============ Internal Functions (On-Chain Math Kept for Testing) ============
 
     function _calculateBorrowAmount(uint256 baseAmount) internal view returns (uint256) {
-        // For 2x leverage: borrow value equal to deposit
-        // Convert base to quote using price oracle (simplified: use Aave prices)
-        uint256 basePrice = aavePool.assetPrices(address(baseAsset));
+        uint256 basePrice = aavePool.assetPrices(address(asset()));
         uint256 quotePrice = aavePool.assetPrices(address(quoteAsset));
         
         if (basePrice == 0 || quotePrice == 0) return 0;
         
-        // Get decimals
-        uint8 baseDecimals = _getDecimals(address(baseAsset));
+        uint8 baseDecimals = _getDecimals(address(asset()));
         uint8 quoteDecimals = _getDecimals(address(quoteAsset));
         
-        // borrowAmount = baseAmount * basePrice / quotePrice (adjusted for decimals)
         uint256 borrowValue = (baseAmount * basePrice) / (10 ** baseDecimals);
         uint256 borrowAmount = (borrowValue * (10 ** quoteDecimals)) / quotePrice;
         
@@ -440,17 +382,15 @@ contract ApollosVault is IApollosVault, ERC20, Ownable, ReentrancyGuard {
         internal 
         returns (uint256 lpReceived) 
     {
-        // Approve tokens to pool
-        baseAsset.safeIncreaseAllowance(address(uniswapPool), baseAmount);
+        IERC20(asset()).safeIncreaseAllowance(address(uniswapPool), baseAmount);
         quoteAsset.safeIncreaseAllowance(address(uniswapPool), quoteAmount);
         
-        // Add liquidity - returns (amount0, amount1, liquidity)
         (,, lpReceived) = uniswapPool.addLiquidity(
             poolKey,
             baseAmount,
             quoteAmount,
-            0, // minAmount0
-            0  // minAmount1
+            0, 
+            0 
         );
     }
 
@@ -461,8 +401,8 @@ contract ApollosVault is IApollosVault, ERC20, Ownable, ReentrancyGuard {
         (baseReceived, quoteReceived) = uniswapPool.removeLiquidity(
             poolKey,
             lpAmount,
-            0, // minAmount0
-            0  // minAmount1
+            0, 
+            0 
         );
     }
 
@@ -473,24 +413,20 @@ contract ApollosVault is IApollosVault, ERC20, Ownable, ReentrancyGuard {
     function _calculateProportionalDebt(uint256 shares) internal view returns (uint256) {
         uint256 supply = totalSupply();
         if (supply == 0) return 0;
-        
         return (_getTotalDebt() * shares) / supply;
     }
 
     function _calculateRebalanceAmount() internal view returns (uint256) {
-        // Calculate LP to remove to bring leverage back to target
         uint256 currentLev = getCurrentLeverage();
         uint256 targetLev = config.targetLeverage;
         
         if (currentLev <= targetLev) return 0;
         
-        // Remove proportional LP to reduce leverage
         uint256 excessLeverage = currentLev - targetLev;
         return (lpTokenBalance * excessLeverage) / currentLev;
     }
 
     function _getLPValueInBase() internal view returns (uint256) {
-        // Query actual position value from Uniswap Pool
         PoolId poolId = poolKey.toId();
         
         (uint256 amount0, uint256 amount1) = uniswapPool.getPositionValue(
@@ -498,37 +434,34 @@ contract ApollosVault is IApollosVault, ERC20, Ownable, ReentrancyGuard {
             address(this)
         );
         
-        // amount0 = base asset (WETH), amount1 = quote asset (USDC)
-        // Convert quote to base and add together for total value in base terms
         uint256 quoteValueInBase = _convertQuoteToBase(amount1);
         
         return amount0 + quoteValueInBase;
     }
 
     function _convertQuoteToBase(uint256 quoteAmount) internal view returns (uint256) {
-        uint256 basePrice = aavePool.assetPrices(address(baseAsset));
+        uint256 basePrice = aavePool.assetPrices(address(asset()));
         uint256 quotePrice = aavePool.assetPrices(address(quoteAsset));
         
         if (basePrice == 0) return 0;
         
-        uint8 baseDecimals = _getDecimals(address(baseAsset));
+        uint8 baseDecimals = _getDecimals(address(asset()));
         uint8 quoteDecimals = _getDecimals(address(quoteAsset));
         
-        // Convert quote to base: quoteAmount * quotePrice / basePrice
         uint256 quoteValue = (quoteAmount * quotePrice) / (10 ** quoteDecimals);
         return (quoteValue * (10 ** baseDecimals)) / basePrice;
     }
 
+    // Fixed shadowing by renaming return var
     function _getDecimals(address token) internal view returns (uint8) {
-        try IERC20Metadata(token).decimals() returns (uint8 decimals) {
-            return decimals;
+        try IERC20Metadata(token).decimals() returns (uint8 tokenDecimals) {
+            return tokenDecimals;
         } catch {
             return 18;
         }
     }
 }
 
-// Interface for ERC20 decimals
 interface IERC20Metadata {
     function decimals() external view returns (uint8);
 }

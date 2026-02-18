@@ -156,7 +156,8 @@ contract ApollosVaultTest is Test {
         weth.approve(address(vault), depositAmount);
         
         uint256 sharesBefore = vault.balanceOf(alice);
-        uint256 shares = vault.deposit(depositAmount, 0);
+        // Changed to use deposit(amount, receiver) for ERC4626 compat
+        uint256 shares = vault.deposit(depositAmount, alice); 
         uint256 sharesAfter = vault.balanceOf(alice);
         
         vm.stopPrank();
@@ -223,7 +224,8 @@ contract ApollosVaultTest is Test {
         
         vm.startPrank(alice);
         newWeth.approve(freshVaultAddr, depositAmount);
-        uint256 shares = freshVault.deposit(depositAmount, 0);
+        // Changed to use deposit(amount, receiver)
+        uint256 shares = freshVault.deposit(depositAmount, alice);
         vm.stopPrank();
         
         // First deposit should be 1:1
@@ -235,7 +237,8 @@ contract ApollosVaultTest is Test {
         weth.approve(address(vault), 1 ether);
         
         vm.expectRevert(IApollosVault.ZeroAmount.selector);
-        vault.deposit(0, 0);
+        // Changed to use deposit(amount, receiver)
+        vault.deposit(0, alice);
         
         vm.stopPrank();
     }
@@ -248,7 +251,8 @@ contract ApollosVaultTest is Test {
         weth.approve(address(vault), depositAmount);
         
         vm.expectRevert(IApollosVault.SlippageExceeded.selector);
-        vault.deposit(depositAmount, minShares);
+        // Using depositFor to test slippage logic
+        vault.depositFor(depositAmount, alice, minShares);
         
         vm.stopPrank();
     }
@@ -261,7 +265,8 @@ contract ApollosVaultTest is Test {
         
         vm.startPrank(alice);
         weth.approve(address(vault), depositAmount);
-        uint256 shares = vault.deposit(depositAmount, 0);
+        // Changed to use deposit(amount, receiver)
+        uint256 shares = vault.deposit(depositAmount, alice);
         
         // Then withdraw half
         uint256 withdrawShares = shares / 2;
@@ -302,7 +307,8 @@ contract ApollosVaultTest is Test {
         
         vm.startPrank(alice);
         weth.approve(address(vault), depositAmount);
-        uint256 actualShares = vault.deposit(depositAmount, 0);
+        // Changed to use deposit(amount, receiver)
+        uint256 actualShares = vault.deposit(depositAmount, alice);
         vm.stopPrank();
         
         // Preview should equal actual (small tolerance for gas)
@@ -317,7 +323,8 @@ contract ApollosVaultTest is Test {
         
         vm.startPrank(alice);
         weth.approve(address(vault), depositAmount);
-        vault.deposit(depositAmount, 0);
+        // Changed to use deposit(amount, receiver)
+        vault.deposit(depositAmount, alice);
         vm.stopPrank();
         
         uint256 leverage = vault.getCurrentLeverage();
@@ -384,7 +391,8 @@ contract ApollosVaultTest is Test {
         weth.approve(address(vault), 1 ether);
         
         vm.expectRevert(IApollosVault.VaultPaused.selector);
-        vault.deposit(1 ether, 0);
+        // Changed to use deposit(amount, receiver)
+        vault.deposit(1 ether, alice);
         
         vm.stopPrank();
     }
@@ -397,7 +405,8 @@ contract ApollosVaultTest is Test {
         
         vm.startPrank(alice);
         weth.approve(address(vault), depositAmount);
-        uint256 shares = vault.deposit(depositAmount, 0);
+        // Changed to use deposit(amount, receiver)
+        uint256 shares = vault.deposit(depositAmount, alice);
         
         // Emergency withdraw
         uint256 wethBefore = weth.balanceOf(alice);
@@ -421,7 +430,8 @@ contract ApollosVaultTest is Test {
         
         vm.startPrank(alice);
         weth.approve(address(vault), depositAmount);
-        uint256 shares = vault.deposit(depositAmount, 0);
+        // Changed to use deposit(amount, receiver)
+        uint256 shares = vault.deposit(depositAmount, alice);
         vm.stopPrank();
         
         console.log("1. Alice deposited", depositAmount / 1e18, "WETH");

@@ -46,7 +46,7 @@ contract ApollosCCIPReceiver is IApollosCCIPReceiver, CCIPReceiver, Ownable, Ree
         uint256 amount;          // Source asset amount (CCIP-BnM)
         address sourceAsset;     // Source asset address
         address targetBaseAsset; // Target vault base asset
-        uint256 minShares;       // Slippage protection
+        uint256 minShares;       // Slippage protection (Legacy/Stored - ignored in favor of fresh param)
         bool executed;           // Execution status
     }
 
@@ -154,48 +154,40 @@ contract ApollosCCIPReceiver is IApollosCCIPReceiver, CCIPReceiver, Ownable, Ree
     // ============ Execute Zap (Phase 2: Execute) ============
 
     /**
-     * @notice Execute the stored deposit intent
-     * @dev Anyone can call this (usually Chainlink Automation or User via UI)
-     *      Uses "Reserve Swap" mechanism:
-     *      1. 1 CCIP-BnM = 10 USDC (Equivalent)
-     *      2. Takes 10 USDC from contract's own balance (Reserve)
-     *      3. Swaps USDC -> Target Base Asset
-     *      4. Deposits to Vault
+     * @notice Execute the stored deposit intent with FRESH Slippage
+     * @param messageId ID of the CCIP message to execute
+     * @param minShares Fresh slippage protection provided by user at execution time
      */
-    function executeZap(bytes32 messageId) external nonReentrant {
+    function executeZap(bytes32 messageId, uint256 minShares) external nonReentrant {
         PendingDeposit storage deposit = pendingDeposits[messageId];
         
         if (deposit.amount == 0) revert("Deposit not found");
         if (deposit.executed) revert("Already executed");
         
-        // Mark executed to prevent reentrancy/replay
+        // Mark executed optimistically.
+        // If anything below fails/reverts, this change will also revert (Native Retry Mechanism).
         deposit.executed = true;
 
-        // 1. Determine local asset & Check Received Amount
+        // 1. Determine local asset
         address localReceivedAsset = _getLocalAsset(deposit.sourceAsset);
-        // Note: In store-and-execute, we assume the tokens are already in the contract from Phase 1
         
         // 2. Reserve Swap Logic: 1 CCIP-BnM (18 dec) = 10 USDC (6 dec)
-        // Only applies if we received CCIP-BnM and need USDC
         address swapFromAsset = localReceivedAsset;
         uint256 swapFromAmount = deposit.amount;
 
         // Check if we need to use Reserve USDC
         if (localReceivedAsset != reserveAsset && reserveAsset != address(0)) {
-            // Calculate required USDC
-            // 1 CCIP-BnM = 10 USDC equivalent value
             uint256 rawAmount = deposit.amount * 10;
             uint256 requiredUsdc = rawAmount / 1e12; // Adjust decimals 18 -> 6
 
-            // Check Reserve Balance
             uint256 reserveBalance = IERC20(reserveAsset).balanceOf(address(this));
             if (reserveBalance < requiredUsdc) {
-                emit ZapFailed(messageId, "Insufficient Reserve USDC");
-                emit ReserveInsufficient(requiredUsdc, reserveBalance);
-                return; // Fail gracefully, user can retry later when reserve is refilled
+                // We keep this as a manual revert/emit because insufficient reserve 
+                // is a contract state issue, not a user parameter issue.
+                // However, reverting here is also fine. Let's revert to keep it simple and safe.
+                revert("Insufficient Reserve USDC");
             }
 
-            // "Swap" by switching reference to Reserve USDC
             swapFromAsset = reserveAsset;
             swapFromAmount = requiredUsdc;
         }
@@ -208,28 +200,22 @@ contract ApollosCCIPReceiver is IApollosCCIPReceiver, CCIPReceiver, Ownable, Ree
             (depositAsset, depositAmount) = _autoZap(
                 swapFromAsset,
                 deposit.targetBaseAsset,
-                swapFromAmount,
-                messageId
+                swapFromAmount
             );
-            
-            if (depositAsset == address(0)) {
-                // Swap failed (log emitted in _autoZap)
-                // We revert the "executed" flag implicitly if we reverted? 
-                // No, we want to allow retry? 
-                // For simplicity here: if swap fails, we mark executed=false to allow retry manually?
-                // OR better: keep executed=true but emit failure, so we don't block.
-                // But in DeFi, if it fails due to slippage, we WANT retry.
-                deposit.executed = false; 
-                return;
-            }
+            // If swap failed (returned 0), _autoZap would have emitted log, 
+            // but here we probably want to revert to allow retry?
+            // Yes, let's strictly require swap success.
+            require(depositAsset != address(0), "Swap failed");
         }
 
         // 4. Deposit to Vault
+        // Direct call without try/catch. If this fails (e.g. minShares not met),
+        // the whole transaction reverts, resetting 'executed' to false.
         _depositToVault(
             depositAsset,
             depositAmount,
             deposit.receiver,
-            deposit.minShares,
+            minShares, // Use FRESH minShares from parameter
             messageId,
             deposit.sourceChainSelector
         );
@@ -240,11 +226,9 @@ contract ApollosCCIPReceiver is IApollosCCIPReceiver, CCIPReceiver, Ownable, Ree
     function _autoZap(
         address fromToken,
         address toToken,
-        uint256 amountIn,
-        bytes32 messageId
+        uint256 amountIn
     ) internal returns (address swappedAsset, uint256 swappedAmount) {
         if (address(swapPool) == address(0) || !hasSwapConfig[toToken]) {
-            emit ZapFailed(messageId, "Swap config missing");
             return (address(0), 0);
         }
         
@@ -262,11 +246,7 @@ contract ApollosCCIPReceiver is IApollosCCIPReceiver, CCIPReceiver, Ownable, Ree
             swappedAsset = toToken;
             swappedAmount = amountOut;
             emit SwapExecuted(fromToken, toToken, amountIn, amountOut);
-        } catch Error(string memory reason) {
-            emit ZapFailed(messageId, string.concat("Swap failed: ", reason));
-            return (address(0), 0);
         } catch {
-            emit ZapFailed(messageId, "Swap failed: unknown");
             return (address(0), 0);
         }
     }
@@ -280,26 +260,20 @@ contract ApollosCCIPReceiver is IApollosCCIPReceiver, CCIPReceiver, Ownable, Ree
         uint64 sourceChainSelector
     ) internal {
         address vault = _getVaultForAsset(asset);
-        if (vault == address(0)) {
-            emit ZapFailed(messageId, "Vault not found");
-            return;
-        }
+        require(vault != address(0), "Vault not found");
         
         IERC20(asset).safeIncreaseAllowance(vault, amount);
         
-        try IApollosVault(vault).depositFor(
+        // This call will REVERT if minShares is not met, causing the whole tx to revert.
+        // This is DESIRED behavior for safety and retryability.
+        uint256 shares = IApollosVault(vault).depositFor(
             amount, receiver, minShares
-        ) returns (uint256 shares) {
-            emit CrossChainDepositReceived(
-                messageId, sourceChainSelector, receiver, asset, amount, shares
-            );
-            emit ZapExecuted(messageId, vault, shares);
-        } catch Error(string memory reason) {
-            emit CrossChainDepositFailed(
-                messageId, sourceChainSelector, receiver, asset, amount, reason
-            );
-            emit ZapFailed(messageId, reason);
-        }
+        );
+            
+        emit CrossChainDepositReceived(
+            messageId, sourceChainSelector, receiver, asset, amount, shares
+        );
+        emit ZapExecuted(messageId, vault, shares);
     }
 
     function _getLocalAsset(address sourceAsset) internal view returns (address) {
@@ -317,6 +291,7 @@ contract ApollosCCIPReceiver is IApollosCCIPReceiver, CCIPReceiver, Ownable, Ree
     }
 
     // ============ Admin Functions ============
+    // ... (Keep existing admin functions) ...
 
     function setAuthorizedSource(
         uint64 sourceChainSelector,

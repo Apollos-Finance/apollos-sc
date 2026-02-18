@@ -86,11 +86,11 @@ interface IApollosVault {
 
     /**
      * @notice Deposit base asset and receive vault shares
-     * @param amount Amount of base asset to deposit
-     * @param minShares Minimum shares to receive (slippage protection)
+     * @param assets Amount of base asset to deposit
+     * @param receiver Address to receive the shares
      * @return shares Amount of afTOKEN shares received
      */
-    function deposit(uint256 amount, uint256 minShares) external returns (uint256 shares);
+    function deposit(uint256 assets, address receiver) external returns (uint256 shares);
 
     /**
      * @notice Deposit base asset on behalf of another user
@@ -206,6 +206,13 @@ interface IApollosVault {
         uint256 maxLeverage,
         uint256 rebalanceThreshold
     ) external;
+
+    /**
+     * @notice Update the Net Asset Value (NAV) of the deployed portfolio
+     * @dev Called by Chainlink Workflow off-chain calculator
+     * @param newTotalAssets The new total assets value (active portfolio)
+     */
+    function updateNAV(uint256 newTotalAssets) external;
 
     /**
      * @notice Pause/unpause vault
