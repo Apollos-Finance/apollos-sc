@@ -17,6 +17,7 @@ import {ApollosFactory} from "../src/core/ApollosFactory.sol";
 import {ApollosVault} from "../src/core/ApollosVault.sol";
 import {ApollosRouter} from "../src/core/ApollosRouter.sol";
 import {ApollosCCIPReceiver} from "../src/core/ApollosCCIPReceiver.sol";
+import {DataFeedsCache} from "../src/core/DataFeedsCache.sol";
 import {IApollosFactory} from "../src/interfaces/IApollosFactory.sol";
 import {SourceChainRouter} from "../src/core/SourceChainRouter.sol";
 
@@ -55,6 +56,7 @@ contract DeployAll is Script {
     address public linkVault;
     ApollosRouter public router;
     ApollosCCIPReceiver public ccipReceiver;
+    DataFeedsCache public dataFeedsCache;
 
     // ============ PoolKeys (stored for CCIPReceiver config) ============
     PoolKey public wethPoolKey;
@@ -75,13 +77,18 @@ contract DeployAll is Script {
     // Map CCIP-BnM (Arbitrum) → MockUSDC for 10x conversion
     address constant CCIP_BNM_BASE_SEPOLIA = 0x88A2d74F47a237a62e7A51cdDa67270CE381555e;
     address constant CCIP_BNM_ARB_SEPOLIA = 0xA8C0c11bf64AF62CDCA6f93D3769B88BdD7cb93D;
+    bytes32 constant WETH_NAV = keccak256("WETH_NAV");
+    bytes32 constant WBTC_NAV = keccak256("WBTC_NAV");
+    bytes32 constant LINK_NAV = keccak256("LINK_NAV");
 
     function run() external virtual {
         uint256 deployerPrivateKey = vm.envUint("PRIVATE_KEY");
         address deployer = vm.addr(deployerPrivateKey);
+        address workflowOperator = vm.envOr("WORKFLOW_UPDATER_ADDRESS", deployer);
 
         console.log("=== Apollos Finance Full Deployment (Arbitrum) ===");
         console.log("Deployer:", deployer);
+        console.log("Workflow operator (keeper/updater):", workflowOperator);
         console.log("Chain ID:", block.chainid);
         console.log("");
 
@@ -90,10 +97,11 @@ contract DeployAll is Script {
         _deployTokens();
         _deployInfrastructure();
         _deployFactory();
+        _deployDataFeedsCache(workflowOperator);
         _deployVaults();
         _deployRouter();
         _deployCCIPReceiver(deployer); // Updated: Pass deployer to fund reserve
-        _configurePermissions(deployer);
+        _configurePermissions(workflowOperator);
         _seedLiquidity(deployer);
 
         vm.stopBroadcast();
@@ -165,6 +173,26 @@ contract DeployAll is Script {
             msg.sender // Treasury = deployer for now
         );
         console.log("ApollosFactory:", address(factory));
+        console.log("");
+    }
+
+    // ============ Step 3.5: Deploy DataFeedsCache ============
+
+    function _deployDataFeedsCache(address workflowOperator) internal {
+        console.log("--- Step 3.5: Deploy DataFeedsCache ---");
+
+        dataFeedsCache = new DataFeedsCache(workflowOperator);
+        console.log("DataFeedsCache:", address(dataFeedsCache));
+        console.log("DataFeedsCache updater:", workflowOperator);
+
+        // Keep explicit keeper assignment so workflow address can also call keeper-gated updates.
+        dataFeedsCache.setKeeper(workflowOperator, true);
+
+        // Configure one feed id per vault NAV (decimals follow underlying asset)
+        dataFeedsCache.configureFeed(WETH_NAV, 18);
+        dataFeedsCache.configureFeed(WBTC_NAV, 8);
+        dataFeedsCache.configureFeed(LINK_NAV, 18);
+        console.log("Data feed ids configured: WETH_NAV, WBTC_NAV, LINK_NAV");
         console.log("");
     }
 
@@ -292,10 +320,11 @@ contract DeployAll is Script {
 
     // ============ Step 7: Configure Permissions ============
 
-    function _configurePermissions(address deployer) internal {
+    function _configurePermissions(address workflowOperator) internal {
         console.log("--- Step 7: Configure Permissions ---");
 
         address[3] memory vaults = [wethVault, wbtcVault, linkVault];
+        bytes32[3] memory navIds = [WETH_NAV, WBTC_NAV, LINK_NAV];
 
         for (uint256 i = 0; i < vaults.length; i++) {
             address vault = vaults[i];
@@ -312,8 +341,13 @@ contract DeployAll is Script {
             // Set optional hard cap (delegation still required)
             aavePool.setCreditLimit(vault, address(usdc), 1_000_000 * 1e6);
 
-            // Authorize deployer as rebalancer (for Chainlink Workflow)
-            ApollosVault(vault).setRebalancer(deployer, true);
+            // Authorize workflow operator as keeper/rebalancer for Chainlink Workflow.
+            ApollosVault(vault).setKeeper(workflowOperator, true);
+            // Backward-compatibility for older integrations that still read setRebalancer path.
+            ApollosVault(vault).setRebalancer(workflowOperator, true);
+
+            // Configure shared DataFeedsCache (one dataId per vault)
+            ApollosVault(vault).setDataFeedConfig(address(dataFeedsCache), navIds[i], 1800);
         }
 
         // Whitelist CCIPReceiver in MockUniswapPool (so it can swap for auto-zap)
@@ -441,6 +475,7 @@ contract DeployAll is Script {
         console.log("MockUniswapPool:", address(uniswapPool));
         console.log("MockAavePool:", address(aavePool));
         console.log("LVRHook:", address(lvrHook));
+        console.log("DataFeedsCache:", address(dataFeedsCache));
         console.log("");
         console.log("--- Core Protocol ---");
         console.log("ApollosFactory:", address(factory));
@@ -464,5 +499,10 @@ contract DeployAll is Script {
         console.log("UNISWAP_POOL_ADDRESS=", address(uniswapPool));
         console.log("AAVE_POOL_ADDRESS=", address(aavePool));
         console.log("LVR_HOOK_ADDRESS=", address(lvrHook));
+        console.log("DATA_FEEDS_CACHE_ADDRESS=", address(dataFeedsCache));
+        console.log("WORKFLOW_UPDATER_ADDRESS=", dataFeedsCache.updater());
+        console.log("WETH_NAV_ID=", uint256(WETH_NAV));
+        console.log("WBTC_NAV_ID=", uint256(WBTC_NAV));
+        console.log("LINK_NAV_ID=", uint256(LINK_NAV));
     }
 }

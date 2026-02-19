@@ -81,6 +81,19 @@ contract MockTokenTest is Test {
         weth.faucet(10001); // Exceeds MAX_FAUCET_AMOUNT
     }
 
+    function test_FaucetRawSupportsFractionalAmount() public {
+        vm.prank(alice);
+        weth.faucetRaw(1e16); // 0.01 WETH
+
+        assertEq(weth.balanceOf(alice), 1e16);
+    }
+
+    function test_FaucetRawMaxAmount() public {
+        vm.prank(alice);
+        vm.expectRevert();
+        weth.faucetRaw(10001 ether); // Exceeds MAX_FAUCET_AMOUNT in raw units
+    }
+
     // ============ WETH Deposit/Withdraw Tests ============
 
     function test_WETHDeposit() public {

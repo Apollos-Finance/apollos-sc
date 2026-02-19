@@ -58,6 +58,10 @@ interface IApollosVault {
     error VaultPaused();
     error SlippageExceeded();
     error RebalanceNotNeeded();
+    error InsufficientIdleLiquidity();
+    error StaleNAVFeed();
+    error InsolventVault();
+    error InvalidOracleConfig();
 
     // ============ Core Functions ============
 
@@ -195,4 +199,31 @@ interface IApollosVault {
      * @param authorized True to authorize, false to remove
      */
     function setRebalancer(address rebalancer, bool authorized) external;
+
+    /**
+     * @notice Set keeper authorization (owner is always authorized)
+     * @param keeper Keeper address
+     * @param authorized True to authorize, false to revoke
+     */
+    function setKeeper(address keeper, bool authorized) external;
+
+    /**
+     * @notice Configure shared DataFeedsCache source for active NAV
+     * @param cache Address of DataFeedsCache
+     * @param dataId Bytes32 feed id (e.g. keccak256("WETH_NAV"))
+     * @param maxAge Maximum feed age in seconds
+     */
+    function setDataFeedConfig(address cache, bytes32 dataId, uint256 maxAge) external;
+
+    /**
+     * @notice Update stale tolerance for oracle feed
+     * @param maxAge Maximum feed age in seconds
+     */
+    function setMaxOracleAge(uint256 maxAge) external;
+
+    /**
+     * @notice Update idle withdrawal buffer used by rebalance
+     * @param bps Buffer in basis points
+     */
+    function setIdleBufferBps(uint256 bps) external;
 }

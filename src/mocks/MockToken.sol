@@ -81,22 +81,24 @@ contract MockToken is ERC20, ERC20Burnable, Ownable {
      * @param amount Amount to mint (in token units, will be multiplied by decimals)
      */
     function faucet(uint256 amount) external {
-        uint256 timeSinceLastClaim = block.timestamp - lastFaucetClaim[msg.sender];
-
-        if (lastFaucetClaim[msg.sender] != 0 && timeSinceLastClaim < FAUCET_COOLDOWN) {
-            revert FaucetCooldownActive(FAUCET_COOLDOWN - timeSinceLastClaim);
-        }
-
         if (amount > MAX_FAUCET_AMOUNT) {
             revert FaucetAmountExceeded(amount, MAX_FAUCET_AMOUNT);
         }
 
-        lastFaucetClaim[msg.sender] = block.timestamp;
+        _claimFaucet(amount * 10 ** _decimals);
+    }
 
-        uint256 mintAmount = amount * 10 ** _decimals;
-        _mint(msg.sender, mintAmount);
+    /**
+     * @notice Faucet - mint using raw smallest-unit amount (supports fractional token UX)
+     * @param rawAmount Amount in token smallest unit (wei/satoshi-like units)
+     */
+    function faucetRaw(uint256 rawAmount) external {
+        uint256 maxRawAmount = MAX_FAUCET_AMOUNT * 10 ** _decimals;
+        if (rawAmount > maxRawAmount) {
+            revert FaucetAmountExceeded(rawAmount, maxRawAmount);
+        }
 
-        emit FaucetClaimed(msg.sender, mintAmount);
+        _claimFaucet(rawAmount);
     }
 
     /**
@@ -129,6 +131,19 @@ contract MockToken is ERC20, ERC20Burnable, Ownable {
 
         uint256 timeSinceLastClaim = block.timestamp - lastFaucetClaim[user];
         return timeSinceLastClaim >= FAUCET_COOLDOWN;
+    }
+
+    function _claimFaucet(uint256 mintAmount) internal {
+        if (mintAmount == 0) revert ZeroAmount();
+
+        uint256 timeSinceLastClaim = block.timestamp - lastFaucetClaim[msg.sender];
+        if (lastFaucetClaim[msg.sender] != 0 && timeSinceLastClaim < FAUCET_COOLDOWN) {
+            revert FaucetCooldownActive(FAUCET_COOLDOWN - timeSinceLastClaim);
+        }
+
+        lastFaucetClaim[msg.sender] = block.timestamp;
+        _mint(msg.sender, mintAmount);
+        emit FaucetClaimed(msg.sender, mintAmount);
     }
 
     /**

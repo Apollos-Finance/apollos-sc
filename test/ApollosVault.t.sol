@@ -16,6 +16,7 @@ import {MockAavePool} from "../src/mocks/MockAavePool.sol";
 import {LVRHook} from "../src/core/LVRHook.sol";
 import {ApollosFactory} from "../src/core/ApollosFactory.sol";
 import {ApollosVault} from "../src/core/ApollosVault.sol";
+import {DataFeedsCache} from "../src/core/DataFeedsCache.sol";
 import {IApollosVault} from "../src/interfaces/IApollosVault.sol";
 import {IApollosFactory} from "../src/interfaces/IApollosFactory.sol";
 
@@ -41,11 +42,13 @@ contract ApollosVaultTest is Test {
     address public bob = makeAddr("bob");
     address public rebalancer = makeAddr("rebalancer");
     address public owner;
+    DataFeedsCache public dataFeedsCache;
 
     // ============ Constants ============
     uint256 constant INITIAL_WETH = 100 ether;
     uint256 constant INITIAL_USDC = 200_000 * 1e6;
     uint256 constant ETH_PRICE = 2000 * 1e8; // $2000
+    bytes32 constant WETH_NAV = keccak256("WETH_NAV");
 
     function setUp() public {
         owner = address(this);
@@ -452,5 +455,53 @@ contract ApollosVaultTest is Test {
 
         // Verify Alice didn't lose too much (some loss expected from fees)
         assertGe(received, depositAmount * 90 / 100, "Should receive at least 90% back");
+    }
+
+    // ============ DataFeedsCache Integration Tests ============
+
+    function _setupDataFeed(uint256 answer, uint256 updatedAt) internal {
+        dataFeedsCache = new DataFeedsCache(owner);
+        dataFeedsCache.configureFeed(WETH_NAV, 18);
+        dataFeedsCache.updateRoundData(WETH_NAV, int256(answer), updatedAt);
+        vault.setDataFeedConfig(address(dataFeedsCache), WETH_NAV, 1800);
+    }
+
+    function test_TotalAssets_FeedPlusIdle() public {
+        _setupDataFeed(50 ether, block.timestamp);
+
+        vm.startPrank(alice);
+        weth.approve(address(vault), 10 ether);
+        vault.deposit(10 ether, alice);
+        vm.stopPrank();
+
+        assertEq(vault.totalAssets(), 60 ether, "totalAssets should use fresh feed + net flow delta");
+    }
+
+    function test_TotalAssets_FallbackToOnchain_WhenFeedStale() public {
+        vm.startPrank(alice);
+        weth.approve(address(vault), 10 ether);
+        vault.deposit(10 ether, alice);
+        vm.stopPrank();
+
+        _setupDataFeed(20 ether, block.timestamp);
+
+        vm.warp(block.timestamp + 2 days);
+
+        uint256 assets = vault.totalAssets();
+        assertGt(assets, 0, "fallback NAV should be positive");
+        assertLt(assets, 20 ether, "stale feed should not be used as primary source");
+    }
+
+    function test_Withdraw_Success_WhenCapitalDeployed() public {
+        vm.startPrank(alice);
+        weth.approve(address(vault), 10 ether);
+        vault.deposit(10 ether, alice);
+        vm.stopPrank();
+
+        vm.startPrank(alice);
+        uint256 received = vault.withdraw(5 ether, 0);
+        vm.stopPrank();
+
+        assertGt(received, 0, "withdraw should unwind position and return base asset");
     }
 }

@@ -10,17 +10,20 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 
 // V4 Core Types
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
-import {PoolId, PoolIdLibrary} from "@uniswap/v4-core/src/types/PoolId.sol";
 import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
+import {PoolIdLibrary} from "@uniswap/v4-core/src/types/PoolId.sol";
 
 // Interfaces
 import {IApollosVault} from "../interfaces/IApollosVault.sol";
 import {IMockAavePool} from "../interfaces/IMockAavePool.sol";
 import {IMockUniswapPool} from "../interfaces/IMockUniswapPool.sol";
+import {IDataFeedsCache} from "../interfaces/IDataFeedsCache.sol";
 
 /**
  * @title ApollosVault
- * @notice Hybrid ERC4626 Vault: Supports both On-Chain Math (Testing) and Off-Chain Accountant (Production)
+ * @notice ERC4626 leveraged vault with feed-priority NAV and on-chain fallback.
+ * @dev Fresh feed path: totalAssets = cachedNAV + netFlowSinceLastUpdate.
+ *      Stale feed path (> maxOracleAge): totalAssets = realtime on-chain NAV.
  */
 contract ApollosVault is IApollosVault, ERC4626, Ownable, ReentrancyGuard {
     using SafeERC20 for IERC20;
@@ -29,7 +32,7 @@ contract ApollosVault is IApollosVault, ERC4626, Ownable, ReentrancyGuard {
     // ============ Constants ============
     uint256 public constant PRECISION = 1e18;
     uint256 public constant BPS = 10000;
-    uint256 public immutable MIN_DEPOSIT = 1e15;
+    uint256 public constant MAX_IDLE_BUFFER_BPS = 3000; // 30%
 
     // ============ Immutables ============
     IERC20 public immutable quoteAsset;
@@ -47,12 +50,23 @@ contract ApollosVault is IApollosVault, ERC4626, Ownable, ReentrancyGuard {
     uint256 public protocolFee;
     address public treasury;
     uint256 public pendingFees;
+    uint256 public MIN_DEPOSIT;
 
-    /// @notice Stored NAV updated by Chainlink Workflow (For Production)
-    uint256 public storedTotalAssets;
+    IDataFeedsCache public dataFeedsCache;
+    bytes32 public navDataId;
+    uint256 public maxOracleAge;
+    uint256 public idleBufferBps;
+    int256 public netFlowSinceLastUpdate;
+    uint256 public lastOracleUpdatedAt;
 
     // ============ Events ============
-    event NAVUpdated(uint256 newValue, uint256 timestamp);
+    event DataFeedConfigUpdated(address indexed cache, bytes32 indexed dataId, uint256 maxOracleAge);
+    event KeeperUpdated(address indexed keeper, bool authorized);
+    event IdleBufferUpdated(uint256 oldBps, uint256 newBps);
+    event NetFlowReset(uint256 oracleUpdatedAt);
+
+    // ============ Errors ============
+    error DeprecatedNAVUpdate();
 
     // ============ Modifiers ============
     modifier whenNotPaused() {
@@ -95,50 +109,60 @@ contract ApollosVault is IApollosVault, ERC4626, Ownable, ReentrancyGuard {
             rebalanceThreshold: 1.1e18
         });
 
-        protocolFee = 100; // 1% default
+        protocolFee = 100; // 1%
+        maxOracleAge = 1800; // 30 minutes fallback threshold
+        idleBufferBps = 1000; // 10%
+
         uint8 tokenDecimals = _getDecimals(_baseAsset);
-        // Set minimum deposit ke 0.001 token (10 pangkat decimals - 3)
         if (tokenDecimals >= 6) {
             MIN_DEPOSIT = 10 ** (tokenDecimals - 6);
         } else {
-            MIN_DEPOSIT = 1; // Fallback aman jika desimal token terlalu kecil
+            MIN_DEPOSIT = 1;
         }
     }
 
     // ============ Accountant / NAV Functions ============
 
-    function updateNAV(uint256 _newTotalAssets) external onlyRebalancer {
-        storedTotalAssets = _newTotalAssets;
-        emit NAVUpdated(_newTotalAssets, block.timestamp);
+    /**
+     * @notice Sync checkpoint hook for workflow/manual operator.
+     * @dev Resets net flow delta, intended to be called around oracle NAV update cycles.
+     */
+    function updateNAV(uint256) external override onlyRebalancer {
+        _syncOracleCheckpoint();
+        netFlowSinceLastUpdate = 0;
+        emit NetFlowReset(lastOracleUpdatedAt);
     }
 
     /**
-     * @notice Hybrid Total Assets Logic
-     * @dev If storedTotalAssets is set (Production/Workflow), use it.
-     *      Otherwise, fallback to On-Chain Math (Testing).
+     * @notice Total assets in base units.
+     * @dev Fresh feed: cached NAV + net flow delta.
+     *      Stale/missing feed: realtime on-chain NAV fallback.
      */
     function totalAssets() public view override(ERC4626, IApollosVault) returns (uint256) {
-        // Mode Production: Use Off-Chain Accountant + Idle Cash
-        if (storedTotalAssets > 0) {
-            return storedTotalAssets + IERC20(asset()).balanceOf(address(this));
+        if (address(dataFeedsCache) != address(0) && navDataId != bytes32(0)) {
+            // Feed decimals must match base asset decimals to avoid conversion mismatch.
+            if (dataFeedsCache.decimals(navDataId) != decimals()) {
+                revert InvalidOracleConfig();
+            }
+
+            (, int256 answer,, uint256 updatedAt,) = dataFeedsCache.latestRoundData(navDataId);
+            bool isFresh = updatedAt != 0 && block.timestamp - updatedAt <= maxOracleAge;
+
+            if (isFresh && answer > 0) {
+                int256 effectiveNetFlow = updatedAt > lastOracleUpdatedAt ? int256(0) : netFlowSinceLastUpdate;
+                return _applyNetFlow(uint256(answer), effectiveNetFlow);
+            }
         }
 
-        // Mode Testing: Use On-Chain Calculation
-        uint256 vaultBalance = IERC20(asset()).balanceOf(address(this));
-        uint256 lpValue = _getLPValueInBase();
-        uint256 debt = _getTotalDebt();
-
-        uint256 debtInBase = _convertQuoteToBase(debt);
-
-        if (vaultBalance + lpValue > debtInBase) {
-            return vaultBalance + lpValue - debtInBase;
-        }
-        return 0;
+        // Fallback source when feed is stale/missing/invalid.
+        return _getRealtimeNavFromOnchain();
     }
 
     // ============ Core Functions ============
 
-    // Override Deposit to maintain Leverage Strategy behavior
+    /**
+     * @notice ERC4626 deposit entrypoint (idle-first)
+     */
     function deposit(uint256 assets, address receiver)
         public
         override(ERC4626, IApollosVault)
@@ -146,6 +170,7 @@ contract ApollosVault is IApollosVault, ERC4626, Ownable, ReentrancyGuard {
         nonReentrant
         returns (uint256 shares)
     {
+        if (receiver == address(0)) revert ZeroAddress();
         return _deposit(assets, receiver, 0);
     }
 
@@ -163,34 +188,32 @@ contract ApollosVault is IApollosVault, ERC4626, Ownable, ReentrancyGuard {
     function _deposit(uint256 amount, address receiver, uint256 minShares) internal returns (uint256 shares) {
         if (amount < MIN_DEPOSIT) revert ZeroAmount();
 
-        // Use ERC4626 standard preview
+        _syncOracleCheckpoint();
+
         shares = previewDeposit(amount);
         if (shares < minShares) revert SlippageExceeded();
 
-        // Transfer base asset from user
         IERC20(asset()).safeTransferFrom(msg.sender, address(this), amount);
 
-        // Execute Strategy (Borrow + LP)
+        // Immediate deploy mode: borrow quote and add leveraged LP instantly.
         uint256 borrowAmount = _calculateBorrowAmount(amount);
-
         if (borrowAmount > 0) {
             quoteAsset.safeIncreaseAllowance(address(aavePool), borrowAmount);
             aavePool.borrow(address(quoteAsset), borrowAmount, 2, 0, address(this));
+
+            uint256 lpReceived = _addLiquidity(amount, borrowAmount);
+            lpTokenBalance += lpReceived;
         }
 
-        uint256 lpReceived = _addLiquidity(amount, borrowAmount);
-        lpTokenBalance += lpReceived;
-
-        if (storedTotalAssets > 0) {
-            storedTotalAssets += amount;
-        }
-
-        // Mint shares
         _mint(receiver, shares);
+        _increaseNetFlow(amount);
 
         emit Deposit(receiver, amount, shares, borrowAmount);
     }
 
+    /**
+     * @notice Custom withdraw using shares + minAmount
+     */
     function withdraw(uint256 shares, uint256 minAmount)
         public
         override
@@ -201,90 +224,107 @@ contract ApollosVault is IApollosVault, ERC4626, Ownable, ReentrancyGuard {
         if (shares == 0) revert ZeroAmount();
         if (balanceOf(msg.sender) < shares) revert InsufficientShares();
 
-        amount = previewRedeem(shares);
-        if (amount < minAmount) revert SlippageExceeded(); // Cek slippage awal
-        
-        uint256 lpToRemove = (lpTokenBalance * shares) / totalSupply();
+        _syncOracleCheckpoint();
 
-        (uint256 amount0Received, uint256 amount1Received) = _removeLiquidity(lpToRemove);
-        address currency0 = Currency.unwrap(poolKey.currency0);
-        uint256 baseReceived = currency0 == address(asset()) ? amount0Received : amount1Received;
-        uint256 quoteReceived = currency0 == address(asset()) ? amount1Received : amount0Received;
-        
-        lpTokenBalance -= lpToRemove;
+        uint256 currentTotalSupply = totalSupply();
+        uint256 debtRepaid;
+        uint256 lpToRemove = lpTokenBalance == 0 ? 0 : (lpTokenBalance * shares) / currentTotalSupply;
+        uint256 totalDebt = _getTotalDebt();
+        uint256 debtToRepay = totalDebt == 0 ? 0 : (totalDebt * shares) / currentTotalSupply;
+        uint256 quoteReceived;
 
-        // Bayar hutang Aave sesuai batas maksimal ketersediaan USDC (mencegah revert karena IL)
-        uint256 debtToRepay = _calculateProportionalDebt(shares);
-        uint256 actualRepay = debtToRepay > quoteReceived ? quoteReceived : debtToRepay;
-        
-        if (actualRepay > 0) {
-            quoteAsset.safeIncreaseAllowance(address(aavePool), actualRepay);
-            aavePool.repay(address(quoteAsset), actualRepay, 2, address(this));
-        }
-
-        _burn(msg.sender, shares);
-
-        // Swap sisa excess USDC menjadi Base Asset murni
-        uint256 excessQuote = quoteReceived > actualRepay ? quoteReceived - actualRepay : 0;
-        
-        if (excessQuote > 0) {
-            bool zeroForOne = Currency.unwrap(poolKey.currency0) == address(quoteAsset);
-            quoteAsset.safeIncreaseAllowance(address(uniswapPool), excessQuote);
-            
-            try uniswapPool.swap(poolKey, zeroForOne, -int256(excessQuote), 0) returns (uint256, uint256) {
-                // Jika swap berhasil, koin WETH/WBTC/LINK di dalam kontrak akan otomatis bertambah
-            } catch {
-                // Fallback darurat (Safety Net): 
-                // Jika pool Uniswap sedang error/kering, terpaksa kirimkan USDC ke user agar nilainya tidak hangus.
-                quoteAsset.safeTransfer(msg.sender, excessQuote);
-            }
-        }
-
-        // 3. Kalkulasi total akhir Base Asset yang tersedia di Vault
-        uint256 availableBase = IERC20(asset()).balanceOf(address(this));
-        
-        // Pastikan kita tidak mengirim lebih dari yang tersedia
-        if (amount > availableBase) {
-            amount = availableBase;
-        }
-        
-        if (amount < minAmount) revert SlippageExceeded(); // Cek slippage akhir
-
-        // 4. Kirim hasil akhir secara bersih ke pengguna (Sesuai ERC4626)
-        IERC20(asset()).safeTransfer(msg.sender, amount);
-
-        // Update sistem akuntansi Off-chain
-        if (storedTotalAssets >= amount) {
-            storedTotalAssets -= amount;
-        } else {
-            storedTotalAssets = 0;
-        }
-
-        emit Withdraw(msg.sender, shares, amount, actualRepay);
-    }
-
-    function rebalance() external override onlyRebalancer nonReentrant returns (uint256 newLeverage) {
-        uint256 currentLeverage = getCurrentLeverage();
-
-        if (!needsRebalance()) revert RebalanceNotNeeded();
-
-        uint256 oldLeverage = currentLeverage;
-        uint256 lpToRemove = _calculateRebalanceAmount();
-
-        if (lpToRemove > 0 && lpToRemove <= lpTokenBalance) {
+        if (lpToRemove > 0) {
             (uint256 amount0Received, uint256 amount1Received) = _removeLiquidity(lpToRemove);
-            address currency0 = Currency.unwrap(poolKey.currency0);
-            uint256 quoteReceived = currency0 == address(asset()) ? amount1Received : amount0Received;
             lpTokenBalance -= lpToRemove;
 
-            if (quoteReceived > 0) {
-                quoteAsset.safeIncreaseAllowance(address(aavePool), quoteReceived);
-                aavePool.repay(address(quoteAsset), quoteReceived, 2, address(this));
+            address currency0 = Currency.unwrap(poolKey.currency0);
+            if (currency0 == address(asset())) {
+                quoteReceived = amount1Received;
+            } else {
+                quoteReceived = amount0Received;
             }
         }
 
-        newLeverage = getCurrentLeverage();
-        emit Rebalance(oldLeverage, newLeverage, lpToRemove, block.timestamp);
+        if (debtToRepay > 0 && quoteReceived > 0) {
+            uint256 repayAmount = quoteReceived > debtToRepay ? debtToRepay : quoteReceived;
+            quoteAsset.safeIncreaseAllowance(address(aavePool), repayAmount);
+            aavePool.repay(address(quoteAsset), repayAmount, 2, address(this));
+            quoteReceived -= repayAmount;
+            debtRepaid = repayAmount;
+        }
+
+        if (quoteReceived > 0) {
+            _swapQuoteToBase(quoteReceived);
+        }
+
+        uint256 idleBalance = IERC20(asset()).balanceOf(address(this));
+        amount = (idleBalance * shares) / currentTotalSupply;
+        if (amount < minAmount) revert SlippageExceeded();
+        if (amount > idleBalance) revert InsufficientIdleLiquidity();
+
+        _burn(msg.sender, shares);
+        IERC20(asset()).safeTransfer(msg.sender, amount);
+        _decreaseNetFlow(amount);
+
+        emit Withdraw(msg.sender, shares, amount, debtRepaid);
+    }
+
+    /**
+     * @notice Keeper-triggered strategy management
+     * @dev Rebalance can:
+     *      - deploy excess idle capital while preserving idle buffer
+     *      - deleverage when health factor drops below threshold
+     */
+    function rebalance() external override onlyRebalancer nonReentrant returns (uint256 newLeverage) {
+        _syncOracleCheckpoint();
+
+        uint256 oldLeverage = _safeGetCurrentLeverage();
+        bool didAction;
+        uint256 debtRepaid;
+
+        uint256 idleBalance = IERC20(asset()).balanceOf(address(this));
+        // Keep withdrawal buffer from currently idle liquidity only.
+        // This avoids hard dependency on fresh NAV feed before keeper rebalance execution.
+        uint256 targetIdle = (idleBalance * idleBufferBps) / BPS;
+
+        // 1) Deploy excess idle above configured withdrawal buffer.
+        if (idleBalance > targetIdle) {
+            uint256 deployAmount = idleBalance - targetIdle;
+            uint256 borrowAmount = _calculateBorrowAmount(deployAmount);
+
+            if (borrowAmount > 0) {
+                quoteAsset.safeIncreaseAllowance(address(aavePool), borrowAmount);
+                aavePool.borrow(address(quoteAsset), borrowAmount, 2, 0, address(this));
+
+                uint256 lpReceived = _addLiquidity(deployAmount, borrowAmount);
+                lpTokenBalance += lpReceived;
+                didAction = true;
+            }
+        }
+
+        // 2) Deleverage if risk threshold is breached.
+        if (needsRebalance()) {
+            uint256 lpToRemove = _calculateRebalanceAmount();
+            if (lpToRemove > 0 && lpToRemove <= lpTokenBalance) {
+                (uint256 amount0Received, uint256 amount1Received) = _removeLiquidity(lpToRemove);
+                address currency0 = Currency.unwrap(poolKey.currency0);
+                uint256 quoteReceived = currency0 == address(asset()) ? amount1Received : amount0Received;
+                lpTokenBalance -= lpToRemove;
+
+                if (quoteReceived > 0) {
+                    quoteAsset.safeIncreaseAllowance(address(aavePool), quoteReceived);
+                    aavePool.repay(address(quoteAsset), quoteReceived, 2, address(this));
+                    debtRepaid = quoteReceived;
+                }
+
+                didAction = true;
+            }
+        }
+
+        if (!didAction) revert RebalanceNotNeeded();
+
+        newLeverage = _safeGetCurrentLeverage();
+        emit Rebalance(oldLeverage, newLeverage, debtRepaid, block.timestamp);
     }
 
     function emergencyWithdraw(uint256 shares) external override returns (uint256 amount) {
@@ -353,7 +393,7 @@ contract ApollosVault is IApollosVault, ERC4626, Ownable, ReentrancyGuard {
         return super.balanceOf(account);
     }
 
-    function withdraw(uint256 assets, address receiver, address owner) public override(ERC4626) returns (uint256) {
+    function withdraw(uint256, address, address) public pure override(ERC4626) returns (uint256) {
         revert("Use withdraw(shares, minAmount)");
     }
 
@@ -375,6 +415,38 @@ contract ApollosVault is IApollosVault, ERC4626, Ownable, ReentrancyGuard {
 
     function setRebalancer(address rebalancer, bool authorized) external override onlyOwner {
         authorizedRebalancers[rebalancer] = authorized;
+        emit KeeperUpdated(rebalancer, authorized);
+    }
+
+    function setKeeper(address keeper, bool authorized) external override onlyOwner {
+        authorizedRebalancers[keeper] = authorized;
+        emit KeeperUpdated(keeper, authorized);
+    }
+
+    function setDataFeedConfig(address cache, bytes32 dataId, uint256 maxAge) external override onlyOwner {
+        if (cache == address(0)) revert ZeroAddress();
+        if (dataId == bytes32(0) || maxAge == 0) revert InvalidOracleConfig();
+
+        dataFeedsCache = IDataFeedsCache(cache);
+        navDataId = dataId;
+        maxOracleAge = maxAge;
+        _syncOracleCheckpoint();
+        netFlowSinceLastUpdate = 0;
+        emit NetFlowReset(lastOracleUpdatedAt);
+
+        emit DataFeedConfigUpdated(cache, dataId, maxAge);
+    }
+
+    function setMaxOracleAge(uint256 maxAge) external override onlyOwner {
+        if (maxAge == 0) revert InvalidOracleConfig();
+        maxOracleAge = maxAge;
+    }
+
+    function setIdleBufferBps(uint256 bps) external override onlyOwner {
+        if (bps == 0 || bps > MAX_IDLE_BUFFER_BPS) revert InvalidOracleConfig();
+        uint256 oldBps = idleBufferBps;
+        idleBufferBps = bps;
+        emit IdleBufferUpdated(oldBps, bps);
     }
 
     function setTreasury(address _treasury) external onlyOwner {
@@ -385,7 +457,7 @@ contract ApollosVault is IApollosVault, ERC4626, Ownable, ReentrancyGuard {
         protocolFee = _fee;
     }
 
-    // ============ Internal Functions (On-Chain Math Kept for Testing) ============
+    // ============ Internal Functions ============
 
     function _calculateBorrowAmount(uint256 baseAmount) internal view returns (uint256) {
         uint256 basePrice = aavePool.assetPrices(address(asset()));
@@ -425,7 +497,6 @@ contract ApollosVault is IApollosVault, ERC4626, Ownable, ReentrancyGuard {
         IERC20(currency1).safeIncreaseAllowance(address(uniswapPool), amount1);
 
         (,, lpReceived) = uniswapPool.addLiquidity(poolKey, amount0, amount1, 1, 1);
-
         if (lpReceived == 0) revert SlippageExceeded();
     }
 
@@ -437,31 +508,56 @@ contract ApollosVault is IApollosVault, ERC4626, Ownable, ReentrancyGuard {
         return aavePool.getUserDebt(address(this), address(quoteAsset));
     }
 
-    function _calculateProportionalDebt(uint256 shares) internal view returns (uint256) {
-        uint256 supply = totalSupply();
-        if (supply == 0) return 0;
-        return (_getTotalDebt() * shares) / supply;
-    }
-
     function _calculateRebalanceAmount() internal view returns (uint256) {
-        uint256 currentLev = getCurrentLeverage();
+        uint256 currentLev;
+        try this.getCurrentLeverage() returns (uint256 lev) {
+            currentLev = lev;
+        } catch {
+            // Feed can be stale while workflow is doing rebalance-first then oracle update.
+            // In fallback mode, deleverage in small chunks.
+            return lpTokenBalance / 10;
+        }
+
         uint256 targetLev = config.targetLeverage;
 
         if (currentLev <= targetLev) return 0;
-
         uint256 excessLeverage = currentLev - targetLev;
         return (lpTokenBalance * excessLeverage) / currentLev;
     }
 
-    function _getLPValueInBase() internal view returns (uint256) {
-        PoolId poolId = poolKey.toId();
+    function _safeGetCurrentLeverage() internal view returns (uint256 leverage) {
+        try this.getCurrentLeverage() returns (uint256 lev) {
+            return lev;
+        } catch {
+            return PRECISION;
+        }
+    }
 
-        (uint256 amount0, uint256 amount1) = uniswapPool.getPositionValue(poolId, address(this));
+    function _getRealtimeNavFromOnchain() internal view returns (uint256 totalNav) {
+        uint256 idleBase = IERC20(asset()).balanceOf(address(this));
+        uint256 idleQuote = IERC20(address(quoteAsset)).balanceOf(address(this));
+        uint256 idleQuoteInBase = _convertQuoteToBase(idleQuote);
 
+        uint256 totalDebt = _getTotalDebt();
+        if (lpTokenBalance == 0 && totalDebt == 0) return idleBase + idleQuoteInBase;
+
+        uint256 lpValueInBase = _getLPValueInBase();
+        uint256 debtInBase = _convertQuoteToBase(totalDebt);
+        uint256 strategyNetInBase = lpValueInBase > debtInBase ? (lpValueInBase - debtInBase) : 0;
+
+        // Fallback NAV:
+        // totalAssets = idleBase + convertedIdleQuote + LP_Value - Debt
+        return idleBase + idleQuoteInBase + strategyNetInBase;
+    }
+
+    function _getLPValueInBase() internal view returns (uint256 valueInBase) {
+        if (lpTokenBalance == 0) return 0;
+
+        (uint256 amount0, uint256 amount1) = uniswapPool.getPositionValue(poolKey.toId(), address(this));
         address currency0 = Currency.unwrap(poolKey.currency0);
+
         uint256 baseAmount;
         uint256 quoteAmount;
-
         if (currency0 == address(asset())) {
             baseAmount = amount0;
             quoteAmount = amount1;
@@ -470,24 +566,63 @@ contract ApollosVault is IApollosVault, ERC4626, Ownable, ReentrancyGuard {
             quoteAmount = amount0;
         }
 
-        uint256 quoteValueInBase = _convertQuoteToBase(quoteAmount);
-        return baseAmount + quoteValueInBase;
+        return baseAmount + _convertQuoteToBase(quoteAmount);
     }
 
-    function _convertQuoteToBase(uint256 quoteAmount) internal view returns (uint256) {
+    function _convertQuoteToBase(uint256 quoteAmount) internal view returns (uint256 baseAmount) {
+        if (quoteAmount == 0) return 0;
+
         uint256 basePrice = aavePool.assetPrices(address(asset()));
         uint256 quotePrice = aavePool.assetPrices(address(quoteAsset));
-
-        if (basePrice == 0) return 0;
+        if (basePrice == 0 || quotePrice == 0) revert InvalidOracleConfig();
 
         uint8 baseDecimals = _getDecimals(address(asset()));
         uint8 quoteDecimals = _getDecimals(address(quoteAsset));
 
-        uint256 quoteValue = (quoteAmount * quotePrice) / (10 ** quoteDecimals);
-        return (quoteValue * (10 ** baseDecimals)) / basePrice;
+        uint256 quoteValueUsd = (quoteAmount * quotePrice) / (10 ** quoteDecimals);
+        return (quoteValueUsd * (10 ** baseDecimals)) / basePrice;
     }
 
-    // Fixed shadowing by renaming return var
+    function _swapQuoteToBase(uint256 quoteAmount) internal returns (uint256 baseOut) {
+        if (quoteAmount == 0) return 0;
+        if (quoteAmount > uint256(type(int256).max)) revert SlippageExceeded();
+
+        quoteAsset.safeIncreaseAllowance(address(uniswapPool), quoteAmount);
+
+        bool zeroForOne = Currency.unwrap(poolKey.currency0) == address(quoteAsset);
+        (, baseOut) = uniswapPool.swap(poolKey, zeroForOne, -int256(quoteAmount), 0);
+    }
+
+    function _syncOracleCheckpoint() internal {
+        if (address(dataFeedsCache) == address(0) || navDataId == bytes32(0)) return;
+
+        (,,, uint256 updatedAt,) = dataFeedsCache.latestRoundData(navDataId);
+        if (updatedAt > lastOracleUpdatedAt) {
+            lastOracleUpdatedAt = updatedAt;
+            netFlowSinceLastUpdate = 0;
+            emit NetFlowReset(updatedAt);
+        }
+    }
+
+    function _applyNetFlow(uint256 cachedNav, int256 netFlow) internal pure returns (uint256 total) {
+        if (netFlow >= 0) {
+            total = cachedNav + uint256(netFlow);
+        } else {
+            uint256 absFlow = uint256(-netFlow);
+            total = absFlow >= cachedNav ? 0 : cachedNav - absFlow;
+        }
+    }
+
+    function _increaseNetFlow(uint256 amount) internal {
+        if (amount > uint256(type(int256).max)) revert InvalidOracleConfig();
+        netFlowSinceLastUpdate += int256(amount);
+    }
+
+    function _decreaseNetFlow(uint256 amount) internal {
+        if (amount > uint256(type(int256).max)) revert InvalidOracleConfig();
+        netFlowSinceLastUpdate -= int256(amount);
+    }
+
     function _getDecimals(address token) internal view returns (uint8) {
         try IERC20Metadata(token).decimals() returns (uint8 tokenDecimals) {
             return tokenDecimals;
