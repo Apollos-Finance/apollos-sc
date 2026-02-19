@@ -29,7 +29,7 @@ contract ApollosVault is IApollosVault, ERC4626, Ownable, ReentrancyGuard {
     // ============ Constants ============
     uint256 public constant PRECISION = 1e18;
     uint256 public constant BPS = 10000;
-    uint256 public constant MIN_DEPOSIT = 1e15;
+    uint256 public immutable MIN_DEPOSIT = 1e15;
 
     // ============ Immutables ============
     IERC20 public immutable quoteAsset;
@@ -96,6 +96,13 @@ contract ApollosVault is IApollosVault, ERC4626, Ownable, ReentrancyGuard {
         });
 
         protocolFee = 100; // 1% default
+        uint8 tokenDecimals = _getDecimals(_baseAsset);
+        // Set minimum deposit ke 0.001 token (10 pangkat decimals - 3)
+        if (tokenDecimals >= 6) {
+            MIN_DEPOSIT = 10 ** (tokenDecimals - 6);
+        } else {
+            MIN_DEPOSIT = 1; // Fallback aman jika desimal token terlalu kecil
+        }
     }
 
     // ============ Accountant / NAV Functions ============
@@ -195,47 +202,65 @@ contract ApollosVault is IApollosVault, ERC4626, Ownable, ReentrancyGuard {
         if (balanceOf(msg.sender) < shares) revert InsufficientShares();
 
         amount = previewRedeem(shares);
-        if (amount < minAmount) revert SlippageExceeded();
-
+        if (amount < minAmount) revert SlippageExceeded(); // Cek slippage awal
+        
         uint256 lpToRemove = (lpTokenBalance * shares) / totalSupply();
 
         (uint256 amount0Received, uint256 amount1Received) = _removeLiquidity(lpToRemove);
         address currency0 = Currency.unwrap(poolKey.currency0);
         uint256 baseReceived = currency0 == address(asset()) ? amount0Received : amount1Received;
         uint256 quoteReceived = currency0 == address(asset()) ? amount1Received : amount0Received;
+        
         lpTokenBalance -= lpToRemove;
 
+        // Bayar hutang Aave sesuai batas maksimal ketersediaan USDC (mencegah revert karena IL)
         uint256 debtToRepay = _calculateProportionalDebt(shares);
-        if (debtToRepay > 0 && debtToRepay <= quoteReceived) {
-            quoteAsset.safeIncreaseAllowance(address(aavePool), debtToRepay);
-            aavePool.repay(address(quoteAsset), debtToRepay, 2, address(this));
+        uint256 actualRepay = debtToRepay > quoteReceived ? quoteReceived : debtToRepay;
+        
+        if (actualRepay > 0) {
+            quoteAsset.safeIncreaseAllowance(address(aavePool), actualRepay);
+            aavePool.repay(address(quoteAsset), actualRepay, 2, address(this));
         }
 
         _burn(msg.sender, shares);
 
-        uint256 availableBase = IERC20(asset()).balanceOf(address(this));
-        if (baseReceived < availableBase) {
-            availableBase = baseReceived;
+        // Swap sisa excess USDC menjadi Base Asset murni
+        uint256 excessQuote = quoteReceived > actualRepay ? quoteReceived - actualRepay : 0;
+        
+        if (excessQuote > 0) {
+            bool zeroForOne = Currency.unwrap(poolKey.currency0) == address(quoteAsset);
+            quoteAsset.safeIncreaseAllowance(address(uniswapPool), excessQuote);
+            
+            try uniswapPool.swap(poolKey, zeroForOne, -int256(excessQuote), 0) returns (uint256, uint256) {
+                // Jika swap berhasil, koin WETH/WBTC/LINK di dalam kontrak akan otomatis bertambah
+            } catch {
+                // Fallback darurat (Safety Net): 
+                // Jika pool Uniswap sedang error/kering, terpaksa kirimkan USDC ke user agar nilainya tidak hangus.
+                quoteAsset.safeTransfer(msg.sender, excessQuote);
+            }
         }
+
+        // 3. Kalkulasi total akhir Base Asset yang tersedia di Vault
+        uint256 availableBase = IERC20(asset()).balanceOf(address(this));
+        
+        // Pastikan kita tidak mengirim lebih dari yang tersedia
         if (amount > availableBase) {
             amount = availableBase;
         }
-        if (amount < minAmount) revert SlippageExceeded();
+        
+        if (amount < minAmount) revert SlippageExceeded(); // Cek slippage akhir
 
+        // 4. Kirim hasil akhir secara bersih ke pengguna (Sesuai ERC4626)
         IERC20(asset()).safeTransfer(msg.sender, amount);
 
-        uint256 excessQuote = quoteReceived > debtToRepay ? quoteReceived - debtToRepay : 0;
-        if (excessQuote > 0) {
-            quoteAsset.safeTransfer(msg.sender, excessQuote);
-        }
-
+        // Update sistem akuntansi Off-chain
         if (storedTotalAssets >= amount) {
             storedTotalAssets -= amount;
         } else {
             storedTotalAssets = 0;
         }
 
-        emit Withdraw(msg.sender, shares, amount, debtToRepay);
+        emit Withdraw(msg.sender, shares, amount, actualRepay);
     }
 
     function rebalance() external override onlyRebalancer nonReentrant returns (uint256 newLeverage) {
