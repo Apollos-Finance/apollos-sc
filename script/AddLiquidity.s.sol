@@ -23,13 +23,9 @@ import {LVRHook} from "../src/core/LVRHook.sol";
  *   - WETH_ADDRESS, WBTC_ADDRESS, LINK_ADDRESS, USDC_ADDRESS
  */
 contract AddLiquidity is Script {
-    // ============ Config ============
-
     // Pool configuration (must match DeployAll.s.sol)
     uint24 constant POOL_FEE = 3000;
     int24 constant TICK_SPACING = 60;
-
-    // ============ State ============
 
     MockUniswapPool uniswapPool;
     LVRHook lvrHook;
@@ -45,25 +41,25 @@ contract AddLiquidity is Script {
         console.log("=== Add Liquidity Script ===");
         console.log("Deployer:", deployer);
 
-        // 1. Load contracts from env
+        // Load contracts from env
         _loadContracts();
 
         vm.startBroadcast(deployerPrivateKey);
 
-        // 2. Mint tokens to deployer
+        // Mint tokens to deployer
         _mintTokens(deployer);
 
-        // 3. Approve Uniswap
+        // Approve Uniswap
         _approveTokens(address(uniswapPool));
 
-        // 4. Whitelist deployer (needed to add liquidity)
+        // Whitelist deployer (needed to add liquidity)
         uniswapPool.setWhitelistedVault(deployer, true);
         lvrHook.setWhitelistedVault(deployer, true);
 
-        // 5. Add Liquidity
+        // Add Liquidity
         _addLiquidity();
 
-        // 6. Remove whitelist (optional, better to leave it for future testing)
+        // Remove whitelist (optional)
         // uniswapPool.setWhitelistedVault(deployer, false);
         // lvrHook.setWhitelistedVault(deployer, false);
 
@@ -99,7 +95,7 @@ contract AddLiquidity is Script {
     }
 
     function _addLiquidity() internal {
-        // --- 1. WETH/USDC Pool ---
+        // --- WETH/USDC Pool ---
         // Amount: 1,000 WETH + 2,000,000 USDC ($2,000/ETH)
         PoolKey memory wethKey = _getPoolKey(address(weth), address(usdc));
         {
@@ -108,7 +104,7 @@ contract AddLiquidity is Script {
             console.log("Added liquidity to WETH/USDC pool");
         }
 
-        // --- 2. WBTC/USDC Pool ---
+        // --- WBTC/USDC Pool ---
         // Amount: 50 WBTC + 3,500,000 USDC ($70,000/BTC)
         PoolKey memory wbtcKey = _getPoolKey(address(wbtc), address(usdc));
         {
@@ -117,8 +113,6 @@ contract AddLiquidity is Script {
             console.log("Added liquidity to WBTC/USDC pool");
         }
     }
-
-    // --- Helpers ---
 
     function _getPoolKey(address tokenA, address tokenB) internal view returns (PoolKey memory) {
         (Currency currency0, Currency currency1) = _sortCurrencies(tokenA, tokenB);

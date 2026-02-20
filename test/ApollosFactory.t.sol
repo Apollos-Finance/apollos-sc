@@ -18,7 +18,8 @@ import {IApollosFactory} from "../src/interfaces/IApollosFactory.sol";
 
 /**
  * @title ApollosFactoryTest
- * @notice Test suite for ApollosFactory
+ * @notice Test suite for verifying the functionality of the Apollos Vault Factory.
+ * @author Apollos Finance Team
  */
 contract ApollosFactoryTest is Test {
     MockToken public weth;
@@ -36,21 +37,21 @@ contract ApollosFactoryTest is Test {
     PoolKey public wethUsdcKey;
     PoolKey public wbtcUsdcKey;
 
+    /**
+     * @notice Sets up the test environment by deploying mocks, pools, and the factory.
+     */
     function setUp() public {
         owner = address(this);
         treasury = makeAddr("treasury");
 
-        // Deploy tokens
         weth = new MockToken("Wrapped Ether", "WETH", 18, true);
         usdc = new MockToken("USD Coin", "USDC", 6, false);
         wbtc = new MockToken("Wrapped Bitcoin", "WBTC", 8, false);
 
-        // Deploy pools
         uniswapPool = new MockUniswapPool();
         lvrHook = new LVRHook(address(uniswapPool));
         aavePool = new MockAavePool();
 
-        // Configure Aave
         aavePool.configureReserve(address(weth), 7500, 8000, 10500);
         aavePool.configureReserve(address(usdc), 8000, 8500, 10500);
         aavePool.configureReserve(address(wbtc), 7000, 7500, 11000);
@@ -58,7 +59,6 @@ contract ApollosFactoryTest is Test {
         aavePool.setAssetPrice(address(usdc), 1 * 1e8);
         aavePool.setAssetPrice(address(wbtc), 40000 * 1e8);
 
-        // Create PoolKeys
         (address t0, address t1) =
             address(weth) < address(usdc) ? (address(weth), address(usdc)) : (address(usdc), address(weth));
         wethUsdcKey = PoolKey({
@@ -78,16 +78,15 @@ contract ApollosFactoryTest is Test {
             hooks: IHooks(address(lvrHook))
         });
 
-        // Initialize pools
         uniswapPool.initialize(wethUsdcKey);
         uniswapPool.initialize(wbtcUsdcKey);
 
-        // Deploy factory
         factory = new ApollosFactory(address(aavePool), address(uniswapPool), address(lvrHook), treasury);
     }
 
-    // ============ Create Vault Tests ============
-
+    /**
+     * @notice Verifies successful vault creation and registration.
+     */
     function test_CreateVault_Success() public {
         IApollosFactory.VaultParams memory params = IApollosFactory.VaultParams({
             name: "Apollos WETH Vault",
@@ -107,8 +106,10 @@ contract ApollosFactoryTest is Test {
         console.log("Created vault at:", vault);
     }
 
+    /**
+     * @notice Verifies creation of multiple unique vaults.
+     */
     function test_CreateVault_MultipleVaults() public {
-        // Create WETH vault
         IApollosFactory.VaultParams memory wethParams = IApollosFactory.VaultParams({
             name: "Apollos WETH Vault",
             symbol: "afWETH",
@@ -120,7 +121,6 @@ contract ApollosFactoryTest is Test {
         });
         address wethVault = factory.createVault(wethParams);
 
-        // Create WBTC vault
         IApollosFactory.VaultParams memory wbtcParams = IApollosFactory.VaultParams({
             name: "Apollos WBTC Vault",
             symbol: "afWBTC",
@@ -136,6 +136,9 @@ contract ApollosFactoryTest is Test {
         assertTrue(wethVault != wbtcVault, "Vaults should be different");
     }
 
+    /**
+     * @notice Ensures that creating a duplicate vault for the same pair reverts.
+     */
     function test_CreateVault_RevertDuplicate() public {
         IApollosFactory.VaultParams memory params = IApollosFactory.VaultParams({
             name: "Apollos WETH Vault",
@@ -153,8 +156,9 @@ contract ApollosFactoryTest is Test {
         factory.createVault(params);
     }
 
-    // ============ Registry Tests ============
-
+    /**
+     * @notice Verifies the retrieval of a specific vault by its asset pair.
+     */
     function test_GetVault() public {
         IApollosFactory.VaultParams memory params = IApollosFactory.VaultParams({
             name: "Apollos WETH Vault",
@@ -172,8 +176,10 @@ contract ApollosFactoryTest is Test {
         assertEq(created, fetched, "Should return same vault");
     }
 
+    /**
+     * @notice Verifies the retrieval of all registered vault addresses.
+     */
     function test_GetAllVaults() public {
-        // Create two vaults
         IApollosFactory.VaultParams memory params1 = IApollosFactory.VaultParams({
             name: "Apollos WETH Vault",
             symbol: "afWETH",
@@ -200,25 +206,30 @@ contract ApollosFactoryTest is Test {
         assertEq(allVaults.length, 2, "Should return all vaults");
     }
 
-    // ============ Protocol Fee Tests ============
-
+    /**
+     * @notice Verifies the ability to update the global protocol fee.
+     */
     function test_SetProtocolFee() public {
-        uint256 newFee = 500; // 5%
+        uint256 newFee = 500; 
 
         factory.setProtocolFee(newFee);
 
         assertEq(factory.protocolFee(), newFee);
     }
 
+    /**
+     * @notice Ensures that setting an excessively high protocol fee reverts.
+     */
     function test_SetProtocolFee_RevertExceedsMax() public {
-        uint256 tooHighFee = 2000; // 20%
+        uint256 tooHighFee = 2000; 
 
         vm.expectRevert(IApollosFactory.InvalidParameters.selector);
         factory.setProtocolFee(tooHighFee);
     }
 
-    // ============ Treasury Tests ============
-
+    /**
+     * @notice Verifies the ability to update the protocol treasury address.
+     */
     function test_SetTreasury() public {
         address newTreasury = makeAddr("newTreasury");
 
@@ -227,13 +238,17 @@ contract ApollosFactoryTest is Test {
         assertEq(factory.treasury(), newTreasury);
     }
 
+    /**
+     * @notice Ensures that setting the treasury to the zero address reverts.
+     */
     function test_SetTreasury_RevertZeroAddress() public {
         vm.expectRevert(IApollosFactory.ZeroAddress.selector);
         factory.setTreasury(address(0));
     }
 
-    // ============ View Functions Tests ============
-
+    /**
+     * @notice Verifies retrieval of detailed vault information.
+     */
     function test_GetVaultInfo() public {
         IApollosFactory.VaultParams memory params = IApollosFactory.VaultParams({
             name: "Apollos WETH Vault",
@@ -255,8 +270,9 @@ contract ApollosFactoryTest is Test {
         assertTrue(info.isActive);
     }
 
-    // ============ Access Control Tests ============
-
+    /**
+     * @notice Ensures that only the factory owner can create new vaults.
+     */
     function test_CreateVault_RevertNotOwner() public {
         IApollosFactory.VaultParams memory params = IApollosFactory.VaultParams({
             name: "Apollos WETH Vault",

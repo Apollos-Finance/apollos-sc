@@ -10,22 +10,18 @@ import {IMockAavePool} from "../interfaces/IMockAavePool.sol";
 
 /**
  * @title MockAavePool
- * @notice Simplified Aave V3 Pool for Apollos Finance testing
- * @dev Implements core lending functions for 2x leverage strategy:
- *      1. ApollosVault supplies WETH as collateral
- *      2. ApollosVault borrows USDC against collateral
- *      3. Borrowed USDC + original WETH = 2x liquidity for UniswapPool
+ * @notice Simplified Aave V3 Pool implementation for Apollos testing and simulation.
+ * @author Apollos Team
+ * @dev Implements core lending and borrowing functionality required for the 2x leverage strategy.
+ *      Key features include:
+ *      - Collateral supply and withdrawal.
+ *      - Undercollateralized borrowing via Credit Delegation for whitelisted vaults.
+ *      - Basic health factor calculation and liquidation simulation.
  *
- * Simplifications:
- *      - No aTokens/debtTokens (balances tracked internally)
- *      - Fixed interest rates (no interest accrual for hackathon)
- *      - Manual price setting (no Chainlink oracle integration)
- *      - Single interest rate mode (variable only)
+ * @custom:security-contact security@apollos.finance
  */
 contract MockAavePool is IMockAavePool, Ownable, ReentrancyGuard {
     using SafeERC20 for IERC20;
-
-    // ============ Constants ============
 
     /// @notice Basis points denominator (100% = 10000)
     uint256 public constant BPS = 10000;
@@ -33,74 +29,83 @@ contract MockAavePool is IMockAavePool, Ownable, ReentrancyGuard {
     /// @notice Health factor precision (1e18 = 1.0)
     uint256 public constant HEALTH_FACTOR_PRECISION = 1e18;
 
-    /// @notice Price precision (8 decimals like Chainlink)
+    /// @notice Price precision (8 decimals like Chainlink oracles)
     uint256 public constant PRICE_PRECISION = 1e8;
 
-    // ============ Structs ============
-
-    /// @notice Reserve configuration
+    /**
+     * @notice Configuration parameters for an asset reserve
+     * @param isActive Whether the reserve is accepting operations
+     * @param ltv Loan-to-Value ratio in basis points
+     * @param liquidationThreshold Liquidation threshold in basis points
+     * @param liquidationBonus Liquidation bonus/penalty in basis points
+     * @param decimals The number of decimals of the underlying asset
+     */
     struct ReserveConfig {
         bool isActive;
-        uint256 ltv; // e.g., 7500 = 75%
-        uint256 liquidationThreshold; // e.g., 8000 = 80%
-        uint256 liquidationBonus; // e.g., 10500 = 5% bonus
-        uint256 decimals; // Token decimals
+        uint256 ltv; 
+        uint256 liquidationThreshold; 
+        uint256 liquidationBonus; 
+        uint256 decimals; 
     }
 
-    // ============ State Variables ============
-
-    /// @notice Reserve configurations per asset
+    /// @notice Maps asset address to its reserve configuration
     mapping(address => ReserveConfig) public reserveConfigs;
 
-    /// @notice Asset prices in USD (8 decimals)
+    /// @notice Maps asset address to its current price in USD (8 decimals)
     mapping(address => uint256) public assetPrices;
 
-    /// @notice User collateral balances: user => asset => amount
+    /// @notice Maps user to asset to their supplied collateral amount
     mapping(address => mapping(address => uint256)) public userCollateral;
 
-    /// @notice User debt balances: user => asset => amount
+    /// @notice Maps user to asset to their current borrowed debt amount
     mapping(address => mapping(address => uint256)) public userDebt;
 
-    /// @notice List of configured assets
+    /// @notice Array of all addresses configured as reserve assets
     address[] public reserveAssets;
 
-    // ============ Credit Delegation (For Apollos Vault) ============
-
-    /// @notice Whitelisted borrowers (ApollosVault) that can borrow without collateral
+    /// @notice Whitelisted borrowers (e.g., ApollosVault) that can access credit delegation
     mapping(address => bool) public whitelistedBorrowers;
 
-    /// @notice Credit limit per whitelisted borrower per asset
+    /// @notice Maps borrower to asset to their specific protocol-enforced credit limit
     mapping(address => mapping(address => uint256)) public creditLimits;
 
     /// @notice Delegation allowance: delegator => borrower => asset => amount
     mapping(address => mapping(address => mapping(address => uint256))) public creditDelegations;
 
-    /// @notice Total delegated amount by delegator per asset
+    /// @notice Total amount of an asset delegated by a specific delegator
     mapping(address => mapping(address => uint256)) public totalDelegatedBy;
 
-    /// @notice Total delegated amount to borrower per asset
+    /// @notice Total amount of an asset delegated to a specific borrower
     mapping(address => mapping(address => uint256)) public totalDelegatedToBorrower;
 
-    /// @notice Virtual collateral for whitelisted borrowers (LP tokens locked in vault)
+    /// @notice Tracks virtual collateral value for whitelisted borrowers
     mapping(address => uint256) public virtualCollateral;
 
-    // ============ Events for Credit Delegation ============
+    /// @notice Emitted when a borrower's whitelist status is updated
     event BorrowerWhitelisted(address indexed borrower, bool status);
+    
+    /// @notice Emitted when a credit limit is set for a borrower
     event CreditLimitSet(address indexed borrower, address indexed asset, uint256 limit);
+    
+    /// @notice Emitted when a credit delegation is modified
     event CreditDelegationUpdated(
         address indexed delegator, address indexed borrower, address indexed asset, uint256 oldAmount, uint256 newAmount
     );
+    
+    /// @notice Emitted when virtual collateral for a borrower is updated
     event VirtualCollateralUpdated(address indexed borrower, uint256 amount);
 
-    // ============ Constructor ============
-
+    /**
+     * @notice Initializes the MockAavePool
+     */
     constructor() Ownable(msg.sender) {}
 
-    // ============ Core Functions ============
-
     /**
-     * @notice Supply assets as collateral
-     * @dev Transfers tokens from user and tracks collateral balance
+     * @notice Supplies assets to the pool to be used as collateral or for lending
+     * @dev Transfers tokens from the caller to this contract and updates collateral tracking
+     * @param asset The address of the asset to supply
+     * @param amount The amount of the asset to supply
+     * @param onBehalfOf The address that will receive the collateral credit
      */
     function supply(
         address asset,
@@ -116,18 +121,20 @@ contract MockAavePool is IMockAavePool, Ownable, ReentrancyGuard {
         if (!reserveConfigs[asset].isActive) revert ReserveNotActive();
         if (onBehalfOf == address(0)) revert ZeroAddress();
 
-        // Transfer tokens from caller
         IERC20(asset).safeTransferFrom(msg.sender, address(this), amount);
 
-        // Update collateral balance
         userCollateral[onBehalfOf][asset] += amount;
 
         emit Supply(asset, msg.sender, onBehalfOf, amount);
     }
 
     /**
-     * @notice Withdraw collateral from the pool
-     * @dev Checks health factor after withdrawal
+     * @notice Withdraws supplied assets from the pool
+     * @dev Validates that the withdrawal doesn't break health factor requirements if debt exists
+     * @param asset The address of the asset to withdraw
+     * @param amount The amount to withdraw (use type(uint256).max for full balance)
+     * @param to The address that will receive the assets
+     * @return The actual amount withdrawn
      */
     function withdraw(address asset, uint256 amount, address to) external override nonReentrant returns (uint256) {
         if (to == address(0)) revert ZeroAddress();
@@ -135,29 +142,24 @@ contract MockAavePool is IMockAavePool, Ownable, ReentrancyGuard {
         uint256 userBalance = userCollateral[msg.sender][asset];
         if (userBalance == 0) revert NothingToWithdraw();
 
-        // Handle max withdrawal
         uint256 amountToWithdraw = amount == type(uint256).max ? userBalance : amount;
         if (amountToWithdraw > userBalance) revert InvalidAmount();
 
-        // Keep delegator's pledged backing locked unless delegation is reduced first
         uint256 delegatedAmount = totalDelegatedBy[msg.sender][asset];
         if (userBalance - amountToWithdraw < delegatedAmount) revert DelegationExceedsSuppliedBalance();
 
-        // Update balance first (checks-effects-interactions)
         userCollateral[msg.sender][asset] -= amountToWithdraw;
 
-        // Check health factor after withdrawal (only if user has ANY debt)
+        // Validation check for health factor if the user has active debt
         (, uint256 totalDebt,,,,) = getUserAccountData(msg.sender);
         if (totalDebt > 0) {
             uint256 healthFactor = _calculateHealthFactor(msg.sender);
             if (healthFactor < HEALTH_FACTOR_PRECISION) {
-                // Revert the balance change
                 userCollateral[msg.sender][asset] += amountToWithdraw;
                 revert HealthFactorTooLow();
             }
         }
 
-        // Transfer tokens
         IERC20(asset).safeTransfer(to, amountToWithdraw);
 
         emit Withdraw(asset, msg.sender, to, amountToWithdraw);
@@ -165,8 +167,11 @@ contract MockAavePool is IMockAavePool, Ownable, ReentrancyGuard {
     }
 
     /**
-     * @notice Borrow assets against collateral
-     * @dev Checks that borrow doesn't exceed available borrows
+     * @notice Borrows assets from the pool against collateral or via credit delegation
+     * @dev For whitelisted borrowers, it uses delegated credit limits
+     * @param asset The address of the asset to borrow
+     * @param amount The amount to borrow
+     * @param onBehalfOf The address that will incur the debt
      */
     function borrow(
         address asset,
@@ -185,35 +190,33 @@ contract MockAavePool is IMockAavePool, Ownable, ReentrancyGuard {
         if (!reserveConfigs[asset].isActive) revert ReserveNotActive();
         if (onBehalfOf == address(0)) revert ZeroAddress();
 
-        // Credit Delegation: Whitelisted vaults can borrow without collateral
         if (whitelistedBorrowers[onBehalfOf]) {
-            // Check against credit limit instead of collateral
             uint256 currentDebt = userDebt[onBehalfOf][asset];
             uint256 limit = _getEffectiveCreditLimit(onBehalfOf, asset);
             if (currentDebt + amount > limit) revert InsufficientCollateral();
         } else {
-            // Standard collateralized borrow
             (,, uint256 availableBorrows,,,) = getUserAccountData(onBehalfOf);
             uint256 borrowValueInBase = _getAssetValueInBase(asset, amount);
             if (borrowValueInBase > availableBorrows) revert InsufficientCollateral();
         }
 
-        // Check pool liquidity
         uint256 poolBalance = IERC20(asset).balanceOf(address(this));
         if (amount > poolBalance) revert InvalidAmount();
 
-        // Update debt balance
         userDebt[onBehalfOf][asset] += amount;
 
-        // Transfer borrowed tokens
         IERC20(asset).safeTransfer(msg.sender, amount);
 
         emit Borrow(asset, msg.sender, onBehalfOf, amount, 2, 0);
     }
 
     /**
-     * @notice Repay borrowed assets
-     * @dev Transfers tokens from caller and reduces debt
+     * @notice Repays borrowed assets
+     * @dev Reduces the debt balance of the specified user
+     * @param asset The address of the asset to repay
+     * @param amount The amount to repay (use type(uint256).max for full debt)
+     * @param onBehalfOf The address whose debt is being repaid
+     * @return The actual amount repaid
      */
     function repay(
         address asset,
@@ -232,16 +235,13 @@ contract MockAavePool is IMockAavePool, Ownable, ReentrancyGuard {
         uint256 currentDebt = userDebt[onBehalfOf][asset];
         if (currentDebt == 0) revert NothingToRepay();
 
-        // Handle max repay
         uint256 amountToRepay = amount == type(uint256).max ? currentDebt : amount;
         if (amountToRepay > currentDebt) {
             amountToRepay = currentDebt;
         }
 
-        // Transfer tokens from caller
         IERC20(asset).safeTransferFrom(msg.sender, address(this), amountToRepay);
 
-        // Update debt balance
         userDebt[onBehalfOf][asset] -= amountToRepay;
 
         emit Repay(asset, onBehalfOf, msg.sender, amountToRepay);
@@ -249,8 +249,12 @@ contract MockAavePool is IMockAavePool, Ownable, ReentrancyGuard {
     }
 
     /**
-     * @notice Liquidate an undercollateralized position
-     * @dev Liquidator repays debt and receives collateral + bonus
+     * @notice Liquidates an undercollateralized position
+     * @dev Transfers debt asset from liquidator and collateral asset to liquidator
+     * @param collateralAsset The address of the asset to be seized
+     * @param debtAsset The address of the borrowed asset to be repaid
+     * @param user The address of the user being liquidated
+     * @param debtToCover The amount of debt to repay
      */
     function liquidationCall(
         address collateralAsset,
@@ -263,45 +267,43 @@ contract MockAavePool is IMockAavePool, Ownable, ReentrancyGuard {
         override
         nonReentrant
     {
-        // Check if position is liquidatable
         (,,,,, uint256 healthFactor) = getUserAccountData(user);
         if (healthFactor >= HEALTH_FACTOR_PRECISION) revert NotLiquidatable();
 
         uint256 userDebtBalance = userDebt[user][debtAsset];
         if (userDebtBalance == 0) revert NothingToRepay();
 
-        // Cap debt to cover at 50% of total debt (standard Aave rule)
         uint256 maxDebtToCover = (userDebtBalance * 50) / 100;
         uint256 actualDebtToCover = debtToCover > maxDebtToCover ? maxDebtToCover : debtToCover;
 
-        // Calculate collateral to receive (with bonus)
         ReserveConfig memory config = reserveConfigs[collateralAsset];
         uint256 debtValueInBase = _getAssetValueInBase(debtAsset, actualDebtToCover);
         uint256 collateralToLiquidate = _getAssetAmountFromBase(collateralAsset, debtValueInBase);
         uint256 collateralWithBonus = (collateralToLiquidate * config.liquidationBonus) / BPS;
 
-        // Check user has enough collateral
         uint256 userCollateralBalance = userCollateral[user][collateralAsset];
         if (collateralWithBonus > userCollateralBalance) {
             collateralWithBonus = userCollateralBalance;
         }
 
-        // Execute liquidation
-        // 1. Liquidator repays debt
         IERC20(debtAsset).safeTransferFrom(msg.sender, address(this), actualDebtToCover);
         userDebt[user][debtAsset] -= actualDebtToCover;
 
-        // 2. Liquidator receives collateral
         userCollateral[user][collateralAsset] -= collateralWithBonus;
         IERC20(collateralAsset).safeTransfer(msg.sender, collateralWithBonus);
 
         emit Liquidation(collateralAsset, debtAsset, user, actualDebtToCover, collateralWithBonus, msg.sender);
     }
 
-    // ============ View Functions ============
-
     /**
-     * @notice Get user account data with health factor
+     * @notice Returns account data for a specific user
+     * @param user The address of the user
+     * @return totalCollateralBase Total collateral value in base currency (USD)
+     * @return totalDebtBase Total debt value in base currency (USD)
+     * @return availableBorrowsBase Remaining borrowing power in base currency (USD)
+     * @return currentLiquidationThreshold Weighted liquidation threshold
+     * @return ltv Weighted Loan-to-Value
+     * @return healthFactor The current health factor of the user
      */
     function getUserAccountData(address user)
         public
@@ -316,7 +318,6 @@ contract MockAavePool is IMockAavePool, Ownable, ReentrancyGuard {
             uint256 healthFactor
         )
     {
-        // Calculate total collateral and weighted LTV
         uint256 weightedLtv;
         uint256 weightedLiqThreshold;
 
@@ -333,41 +334,38 @@ contract MockAavePool is IMockAavePool, Ownable, ReentrancyGuard {
                 weightedLiqThreshold += valueInBase * config.liquidationThreshold;
             }
 
-            // Calculate total debt
             uint256 debt = userDebt[user][asset];
             if (debt > 0) {
                 totalDebtBase += _getAssetValueInBase(asset, debt);
             }
         }
 
-        // Calculate weighted averages
         if (totalCollateralBase > 0) {
             ltv = weightedLtv / totalCollateralBase;
             currentLiquidationThreshold = weightedLiqThreshold / totalCollateralBase;
 
-            // Calculate max borrow power
             uint256 maxBorrowPower = (totalCollateralBase * ltv) / BPS;
 
-            // Prevent underflow: check if debt exceeds limit
             if (totalDebtBase > maxBorrowPower) {
-                availableBorrowsBase = 0; // Debt exceeds limit
+                availableBorrowsBase = 0; 
             } else {
                 availableBorrowsBase = maxBorrowPower - totalDebtBase;
             }
         }
 
-        // Calculate health factor
         healthFactor = _calculateHealthFactor(user);
     }
 
     /**
-     * @notice Get reserve data (simplified)
+     * @notice Returns reserve data for a specific asset (Mock implementation)
+     * @param asset The address of the asset
+     * @return Data structure containing reserve state
      */
     function getReserveData(address asset) external view override returns (ReserveData memory) {
         return ReserveData({
-            aTokenAddress: address(0), // Not using aTokens
+            aTokenAddress: address(0),
             variableDebtTokenAddress: address(0),
-            liquidityRate: 0, // No interest for hackathon
+            liquidityRate: 0, 
             variableBorrowRate: 0,
             liquidityIndex: 1e27,
             variableBorrowIndex: 1e27
@@ -375,23 +373,25 @@ contract MockAavePool is IMockAavePool, Ownable, ReentrancyGuard {
     }
 
     /**
-     * @notice Get user's collateral balance
+     * @notice Returns user's collateral balance for a specific asset
      */
     function getUserCollateral(address user, address asset) external view override returns (uint256) {
         return userCollateral[user][asset];
     }
 
     /**
-     * @notice Get user's debt balance
+     * @notice Returns user's debt balance for a specific asset
      */
     function getUserDebt(address user, address asset) external view override returns (uint256) {
         return userDebt[user][asset];
     }
 
-    // ============ Admin Functions ============
-
     /**
-     * @notice Configure a reserve asset
+     * @notice Configures parameters for a reserve asset
+     * @param asset The address of the asset
+     * @param _ltv Loan-to-Value in basis points
+     * @param _liquidationThreshold Liquidation threshold in basis points
+     * @param _liquidationBonus Liquidation bonus in basis points
      */
     function configureReserve(address asset, uint256 _ltv, uint256 _liquidationThreshold, uint256 _liquidationBonus)
         external
@@ -400,7 +400,6 @@ contract MockAavePool is IMockAavePool, Ownable, ReentrancyGuard {
     {
         if (asset == address(0)) revert ZeroAddress();
 
-        // Add to reserve list if new
         if (!reserveConfigs[asset].isActive) {
             reserveAssets.push(asset);
         }
@@ -417,14 +416,18 @@ contract MockAavePool is IMockAavePool, Ownable, ReentrancyGuard {
     }
 
     /**
-     * @notice Set asset price (for testing without oracle)
+     * @notice Manually sets the price of an asset (for simulation purposes)
+     * @param asset The address of the asset
+     * @param priceInUsd The price in USD (8 decimals)
      */
     function setAssetPrice(address asset, uint256 priceInUsd) external override onlyOwner {
         assetPrices[asset] = priceInUsd;
     }
 
     /**
-     * @notice Batch set asset prices
+     * @notice Sets prices for multiple assets in a single transaction
+     * @param assets Array of asset addresses
+     * @param prices Array of corresponding prices in USD (8 decimals)
      */
     function batchSetAssetPrices(address[] calldata assets, uint256[] calldata prices) external onlyOwner {
         require(assets.length == prices.length, "Length mismatch");
@@ -434,17 +437,17 @@ contract MockAavePool is IMockAavePool, Ownable, ReentrancyGuard {
     }
 
     /**
-     * @notice Seed pool with liquidity for borrowing
+     * @notice Seeds the pool with liquidity for lending
+     * @param asset The address of the asset to seed
+     * @param amount The amount of the asset to transfer to the pool
      */
     function seedLiquidity(address asset, uint256 amount) external onlyOwner {
         IERC20(asset).safeTransferFrom(msg.sender, address(this), amount);
     }
 
-    // ============ Credit Delegation Admin Functions ============
-
     /**
-     * @notice Whitelist a borrower (ApollosVault) for undercollateralized borrowing
-     * @param borrower The address to whitelist
+     * @notice Updates the whitelist status of a borrower
+     * @param borrower The address of the borrower
      * @param status True to whitelist, false to remove
      */
     function setWhitelistedBorrower(address borrower, bool status) external onlyOwner {
@@ -454,13 +457,10 @@ contract MockAavePool is IMockAavePool, Ownable, ReentrancyGuard {
     }
 
     /**
-     * @notice Set optional protocol hard cap for borrower credit
-     * @dev Effective borrow limit for whitelisted borrowers is:
-     *      min(total delegated credit, protocol hard cap) when hard cap > 0
-     *      total delegated credit when hard cap == 0
-     * @param borrower The whitelisted borrower address
-     * @param asset The asset they can borrow
-     * @param limit Maximum amount they can borrow
+     * @notice Sets a credit limit for a whitelisted borrower
+     * @param borrower The address of the whitelisted borrower
+     * @param asset The address of the asset
+     * @param limit The maximum amount the borrower can borrow
      */
     function setCreditLimit(address borrower, address asset, uint256 limit) external onlyOwner {
         if (borrower == address(0) || asset == address(0)) revert ZeroAddress();
@@ -469,9 +469,10 @@ contract MockAavePool is IMockAavePool, Ownable, ReentrancyGuard {
     }
 
     /**
-     * @notice Set delegated borrow allowance from msg.sender to whitelisted borrower
-     * @dev Delegation can be increased up to supplier's deposited balance of the asset.
-     *      Delegation can be reduced as long as it does not go below borrower's current debt.
+     * @notice Delegates borrowing power from msg.sender to a whitelisted borrower
+     * @param borrower The address allowed to borrow on behalf of msg.sender
+     * @param asset The address of the asset to delegate
+     * @param amount The maximum amount of delegation
      */
     function setCreditDelegation(address borrower, address asset, uint256 amount) external override nonReentrant {
         if (borrower == address(0) || asset == address(0)) revert ZeroAddress();
@@ -509,9 +510,10 @@ contract MockAavePool is IMockAavePool, Ownable, ReentrancyGuard {
     }
 
     /**
-     * @notice Update virtual collateral (called when vault deposits LP tokens)
-     * @param borrower The vault address
-     * @param amount The virtual collateral value in base currency
+     * @notice Updates virtual collateral value for a borrower
+     * @dev Used to simulate the value of LP tokens locked in a vault
+     * @param borrower The address of the borrower
+     * @param amount The value in base currency
      */
     function updateVirtualCollateral(address borrower, uint256 amount) external onlyOwner {
         virtualCollateral[borrower] = amount;
@@ -519,21 +521,21 @@ contract MockAavePool is IMockAavePool, Ownable, ReentrancyGuard {
     }
 
     /**
-     * @notice Check if an address is a whitelisted borrower
+     * @notice Checks if an address is a whitelisted borrower
      */
     function isWhitelistedBorrower(address borrower) external view returns (bool) {
         return whitelistedBorrowers[borrower];
     }
 
     /**
-     * @notice Get credit limit for a borrower and asset
+     * @notice Returns the credit limit for a borrower and asset
      */
     function getCreditLimit(address borrower, address asset) external view returns (uint256) {
         return creditLimits[borrower][asset];
     }
 
     /**
-     * @notice Get delegation from a specific delegator to borrower
+     * @notice Returns the delegation amount from a delegator to a borrower for an asset
      */
     function getCreditDelegation(address delegator, address borrower, address asset)
         external
@@ -545,24 +547,21 @@ contract MockAavePool is IMockAavePool, Ownable, ReentrancyGuard {
     }
 
     /**
-     * @notice Get aggregate delegated credit available to borrower
+     * @notice Returns the total delegated credit available to a borrower for an asset
      */
     function getTotalDelegatedToBorrower(address borrower, address asset) external view override returns (uint256) {
         return totalDelegatedToBorrower[borrower][asset];
     }
 
     /**
-     * @notice Get aggregate delegated credit set by delegator
+     * @notice Returns the total delegated amount set by a delegator for an asset
      */
     function getTotalDelegatedBy(address delegator, address asset) external view override returns (uint256) {
         return totalDelegatedBy[delegator][asset];
     }
 
-    // ============ Internal Functions ============
-
     /**
-     * @notice Get effective credit limit for whitelisted borrower
-     * @dev Delegated credit is the primary limit. Protocol hard cap is optional.
+     * @dev Internal helper to get effective credit limit (taking protocol hard cap into account)
      */
     function _getEffectiveCreditLimit(address borrower, address asset) internal view returns (uint256) {
         uint256 delegatedLimit = totalDelegatedToBorrower[borrower][asset];
@@ -573,7 +572,7 @@ contract MockAavePool is IMockAavePool, Ownable, ReentrancyGuard {
     }
 
     /**
-     * @notice Calculate health factor for a user
+     * @dev Internal helper to calculate health factor
      */
     function _calculateHealthFactor(address user) internal view returns (uint256) {
         uint256 totalDebtBase;
@@ -582,7 +581,6 @@ contract MockAavePool is IMockAavePool, Ownable, ReentrancyGuard {
         for (uint256 i = 0; i < reserveAssets.length; i++) {
             address asset = reserveAssets[i];
 
-            // Collateral contribution to liquidation threshold
             uint256 collateral = userCollateral[user][asset];
             if (collateral > 0) {
                 uint256 valueInBase = _getAssetValueInBase(asset, collateral);
@@ -590,7 +588,6 @@ contract MockAavePool is IMockAavePool, Ownable, ReentrancyGuard {
                 liquidationThresholdValue += (valueInBase * config.liquidationThreshold) / BPS;
             }
 
-            // Total debt
             uint256 debt = userDebt[user][asset];
             if (debt > 0) {
                 totalDebtBase += _getAssetValueInBase(asset, debt);
@@ -598,31 +595,23 @@ contract MockAavePool is IMockAavePool, Ownable, ReentrancyGuard {
         }
 
         if (totalDebtBase == 0) {
-            return type(uint256).max; // No debt = infinite health
+            return type(uint256).max;
         }
 
-        // Avoid overflow: divide first, then multiply
-        // HF = (liquidationThresholdValue / totalDebtBase) * HEALTH_FACTOR_PRECISION
-        // But this loses precision, so we use:
-        // HF = (liquidationThresholdValue * HEALTH_FACTOR_PRECISION) / totalDebtBase
-        // Safely: check for potential overflow first
         if (liquidationThresholdValue > type(uint256).max / HEALTH_FACTOR_PRECISION) {
-            // Large values: do division first to avoid overflow
             return (liquidationThresholdValue / totalDebtBase) * HEALTH_FACTOR_PRECISION;
         }
         return (liquidationThresholdValue * HEALTH_FACTOR_PRECISION) / totalDebtBase;
     }
 
     /**
-     * @notice Get asset value in base currency (USD, 8 decimals)
+     * @dev Internal helper to get asset value in base currency (USD, 8 decimals)
      */
     function _getAssetValueInBase(address asset, uint256 amount) internal view returns (uint256) {
         uint256 price = assetPrices[asset];
         uint256 decimals = reserveConfigs[asset].decimals;
         uint256 divisor = 10 ** decimals;
 
-        // value = amount * price / 10^decimals
-        // To avoid overflow: divide first if amount is large
         if (amount > type(uint256).max / price) {
             return (amount / divisor) * price;
         }
@@ -630,7 +619,7 @@ contract MockAavePool is IMockAavePool, Ownable, ReentrancyGuard {
     }
 
     /**
-     * @notice Get asset amount from base currency value
+     * @dev Internal helper to get asset amount from base currency value
      */
     function _getAssetAmountFromBase(address asset, uint256 valueInBase) internal view returns (uint256) {
         uint256 price = assetPrices[asset];
@@ -639,8 +628,6 @@ contract MockAavePool is IMockAavePool, Ownable, ReentrancyGuard {
 
         if (price == 0) return 0;
 
-        // amount = valueInBase * 10^decimals / price
-        // To avoid overflow: divide first if valueInBase is large
         if (valueInBase > type(uint256).max / multiplier) {
             return (valueInBase / price) * multiplier;
         }
@@ -648,10 +635,9 @@ contract MockAavePool is IMockAavePool, Ownable, ReentrancyGuard {
     }
 
     /**
-     * @notice Get token decimals
+     * @dev Internal helper to get token decimals
      */
     function _getDecimals(address asset) internal view returns (uint256) {
-        // Try to get decimals, default to 18
         try IERC20Metadata(asset).decimals() returns (uint8 decimals) {
             return decimals;
         } catch {
@@ -660,7 +646,9 @@ contract MockAavePool is IMockAavePool, Ownable, ReentrancyGuard {
     }
 }
 
-// Interface for getting token decimals
+/**
+ * @dev Minimal interface for retrieving token metadata decimals
+ */
 interface IERC20Metadata {
     function decimals() external view returns (uint8);
 }

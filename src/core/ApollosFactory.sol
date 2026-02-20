@@ -2,51 +2,52 @@
 pragma solidity ^0.8.20;
 
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
-
-// V4 Core Types
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
 
-// Interfaces
 import {IApollosFactory} from "../interfaces/IApollosFactory.sol";
 import {ApollosVault} from "./ApollosVault.sol";
 
 /**
  * @title ApollosFactory
- * @notice Factory for creating and managing ApollosVault instances
- * @dev Registry of all vaults with protocol-level configuration:
- *      - Creates new vaults for different asset pairs
- *      - Maintains vault registry for discovery
- *      - Manages protocol fee and treasury
+ * @notice Factory and Registry for creating and managing ApollosVault instances.
+ * @author Apollos Team
+ * @dev This contract acts as the central hub for the protocol, managing vault deployment,
+ *      active vault registration, and global configuration parameters like protocol fees 
+ *      and shared pool manager addresses.
  */
 contract ApollosFactory is IApollosFactory, Ownable {
-    // ============ State Variables ============
-
-    /// @notice Protocol fee in basis points (e.g., 100 = 1%)
+    /// @notice Protocol management fee in basis points (e.g., 100 = 1%).
     uint256 public override protocolFee;
 
-    /// @notice Treasury address for protocol fees
+    /// @notice The address where protocol fees are collected.
     address public override treasury;
 
-    /// @notice Aave Pool used by all vaults
+    /// @notice The address of the Aave V3 Pool used by all vaults for borrowing.
     address public override aavePool;
 
-    /// @notice Uniswap Pool used by all vaults
+    /// @notice The address of the Uniswap V4 Pool Manager used by all vaults for yield generation.
     address public override uniswapPool;
 
-    /// @notice LVR Hook address
+    /// @notice The address of the LVR Hook shared by all protocol vaults.
     address public override lvrHook;
 
-    /// @notice Mapping: baseAsset => quoteAsset => vault
+    /// @dev Internal mapping to resolve vault addresses by asset pair: baseAsset => quoteAsset => vault.
     mapping(address => mapping(address => address)) private vaultsByPair;
 
-    /// @notice Array of all vault addresses
+    /// @dev Internal array to maintain a list of all deployed vault addresses.
     address[] private allVaults;
 
-    /// @notice Vault info by address
+    /// @dev Internal mapping to store metadata for each deployed vault.
     mapping(address => VaultInfo) private vaultInfos;
 
-    // ============ Constructor ============
 
+    /**
+     * @notice Initializes the ApollosFactory with shared infrastructure addresses.
+     * @param _aavePool The address of the MockAavePool.
+     * @param _uniswapPool The address of the MockUniswapPool.
+     * @param _lvrHook The address of the LVRHook.
+     * @param _treasury The address of the protocol treasury.
+     */
     constructor(address _aavePool, address _uniswapPool, address _lvrHook, address _treasury) Ownable(msg.sender) {
         if (_aavePool == address(0)) revert ZeroAddress();
         if (_uniswapPool == address(0)) revert ZeroAddress();
@@ -59,12 +60,13 @@ contract ApollosFactory is IApollosFactory, Ownable {
         protocolFee = 100; // 1% default
     }
 
-    // ============ Core Functions ============
+    
 
     /**
-     * @notice Create a new vault for an asset pair
-     * @param params Vault creation parameters
-     * @return vault Address of the newly created vault
+     * @notice Deploys and registers a new ApollosVault for a specific asset pair.
+     * @dev Restricted to the factory owner. Transfers vault ownership to the factory owner upon deployment.
+     * @param params Parameters including vault name, symbol, assets, leverage, and pool key.
+     * @return vault The address of the newly created vault contract.
      */
     function createVault(VaultParams calldata params) external override onlyOwner returns (address vault) {
         // Validate inputs
@@ -112,7 +114,8 @@ contract ApollosFactory is IApollosFactory, Ownable {
     }
 
     /**
-     * @notice Deactivate a vault
+     * @notice Deactivates an existing vault, typically to prevent new deposits.
+     * @param vault The address of the vault to deactivate.
      */
     function deactivateVault(address vault) external override onlyOwner {
         if (!isVaultRegistered(vault)) revert VaultNotFound();
@@ -121,7 +124,8 @@ contract ApollosFactory is IApollosFactory, Ownable {
     }
 
     /**
-     * @notice Reactivate a vault
+     * @notice Reactivates a previously deactivated vault.
+     * @param vault The address of the vault to reactivate.
      */
     function reactivateVault(address vault) external override onlyOwner {
         if (!isVaultRegistered(vault)) revert VaultNotFound();
@@ -129,30 +133,49 @@ contract ApollosFactory is IApollosFactory, Ownable {
         emit VaultReactivated(vault);
     }
 
-    // ============ View Functions ============
+    
 
+    /**
+     * @notice Returns the vault address for a specific asset pair.
+     */
     function getVault(address baseAsset, address quoteAsset) external view override returns (address vault) {
         return vaultsByPair[baseAsset][quoteAsset];
     }
 
+    /**
+     * @notice Returns an array containing all registered vault addresses.
+     */
     function getAllVaults() external view override returns (address[] memory) {
         return allVaults;
     }
 
+    /**
+     * @notice Returns metadata for a specific vault.
+     */
     function getVaultInfo(address vault) external view override returns (VaultInfo memory) {
         return vaultInfos[vault];
     }
 
+    /**
+     * @notice Checks if a vault address is officially registered in this factory.
+     */
     function isVaultRegistered(address vault) public view override returns (bool) {
         return vaultInfos[vault].vault != address(0);
     }
 
+    /**
+     * @notice Returns the total count of registered vaults.
+     */
     function vaultCount() external view override returns (uint256) {
         return allVaults.length;
     }
 
-    // ============ Admin Functions ============
+    
 
+    /**
+     * @notice Updates the protocol fee.
+     * @param newFee The new fee in basis points (Max 10%).
+     */
     function setProtocolFee(uint256 newFee) external override onlyOwner {
         if (newFee > 1000) revert InvalidParameters(); // Max 10%
 
@@ -162,6 +185,9 @@ contract ApollosFactory is IApollosFactory, Ownable {
         emit ProtocolFeeUpdated(oldFee, newFee);
     }
 
+    /**
+     * @notice Updates the global treasury address.
+     */
     function setTreasury(address newTreasury) external override onlyOwner {
         if (newTreasury == address(0)) revert ZeroAddress();
 
@@ -172,7 +198,7 @@ contract ApollosFactory is IApollosFactory, Ownable {
     }
 
     /**
-     * @notice Update Aave pool address
+     * @notice Updates the shared Aave pool address for future vaults.
      */
     function setAavePool(address _aavePool) external onlyOwner {
         if (_aavePool == address(0)) revert ZeroAddress();
@@ -180,7 +206,7 @@ contract ApollosFactory is IApollosFactory, Ownable {
     }
 
     /**
-     * @notice Update Uniswap pool address
+     * @notice Updates the shared Uniswap pool address for future vaults.
      */
     function setUniswapPool(address _uniswapPool) external onlyOwner {
         if (_uniswapPool == address(0)) revert ZeroAddress();
@@ -188,14 +214,14 @@ contract ApollosFactory is IApollosFactory, Ownable {
     }
 
     /**
-     * @notice Update LVR Hook address
+     * @notice Updates the shared LVR hook address.
      */
     function setLvrHook(address _lvrHook) external onlyOwner {
         lvrHook = _lvrHook;
     }
 
     /**
-     * @notice Get active vaults only
+     * @notice Returns an array containing only the currently active vault addresses.
      */
     function getActiveVaults() external view returns (address[] memory) {
         uint256 activeCount = 0;

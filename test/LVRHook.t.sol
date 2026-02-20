@@ -18,7 +18,8 @@ import {LVRHook} from "../src/core/LVRHook.sol";
 
 /**
  * @title LVRHookTest
- * @notice Tests for LVRHook - Dynamic Fee & Whitelist functionality
+ * @notice Test suite for verifying the dynamic fee and vault whitelist logic of LVRHook.
+ * @author Apollos Finance Team
  */
 contract LVRHookTest is Test {
     using PoolIdLibrary for PoolKey;
@@ -36,23 +37,21 @@ contract LVRHookTest is Test {
     address public vault = makeAddr("vault");
     address public attacker = makeAddr("attacker");
 
+    /**
+     * @notice Sets up the test environment by deploying tokens, pools, and initializing the LVR hook.
+     */
     function setUp() public {
         vm.startPrank(owner);
 
-        // Deploy tokens
         weth = new MockToken("Wrapped Ether", "WETH", 18, true);
         usdc = new MockToken("USD Coin", "USDC", 6, false);
 
-        // Deploy pool
         pool = new MockUniswapPool();
 
-        // Deploy LVRHook
         lvrHook = new LVRHook(address(pool));
 
-        // Set workflow authorizer
         lvrHook.setWorkflowAuthorizer(workflow);
 
-        // Create PoolKey
         (address token0, address token1) =
             address(weth) < address(usdc) ? (address(weth), address(usdc)) : (address(usdc), address(weth));
 
@@ -66,43 +65,54 @@ contract LVRHookTest is Test {
 
         poolId = poolKey.toId();
 
-        // Initialize pool
         pool.initialize(poolKey);
 
-        // Whitelist vault
         lvrHook.setWhitelistedVault(vault, true);
 
         vm.stopPrank();
     }
 
-    // ============ Dynamic Fee Tests ============
-
+    /**
+     * @notice Verifies that the owner can update the dynamic fee.
+     */
     function test_SetDynamicFeeByOwner() public {
         vm.prank(owner);
-        lvrHook.setDynamicFee(poolId, 50000); // 5%
+        lvrHook.setDynamicFee(poolId, 50000); 
 
         assertEq(lvrHook.getDynamicFee(poolId), 50000);
     }
 
+    /**
+     * @notice Verifies that the authorized workflow address can update the dynamic fee.
+     */
     function test_SetDynamicFeeByWorkflow() public {
         vm.prank(workflow);
-        lvrHook.setDynamicFee(poolId, 100000); // 10%
+        lvrHook.setDynamicFee(poolId, 100000); 
 
         assertEq(lvrHook.getDynamicFee(poolId), 100000);
     }
 
+    /**
+     * @notice Ensures that unauthorized callers cannot update dynamic fees.
+     */
     function test_SetDynamicFeeByAttackerReverts() public {
         vm.prank(attacker);
         vm.expectRevert(LVRHook.NotAuthorized.selector);
         lvrHook.setDynamicFee(poolId, 50000);
     }
 
+    /**
+     * @notice Ensures that setting a fee above the maximum allowed cap reverts.
+     */
     function test_SetDynamicFeeExceedsMaxReverts() public {
         vm.prank(owner);
         vm.expectRevert(LVRHook.InvalidFee.selector);
-        lvrHook.setDynamicFee(poolId, 600000); // 60% > MAX_DYNAMIC_FEE (50%)
+        lvrHook.setDynamicFee(poolId, 600000); 
     }
 
+    /**
+     * @notice Verifies the ability to set a fee with an associated reason string.
+     */
     function test_SetDynamicFeeWithReason() public {
         vm.prank(workflow);
         lvrHook.setDynamicFeeWithReason(poolId, 200000, "High CEX-DEX spread detected");
@@ -110,8 +120,10 @@ contract LVRHookTest is Test {
         assertEq(lvrHook.getDynamicFee(poolId), 200000);
     }
 
+    /**
+     * @notice Verifies the batch fee update functionality.
+     */
     function test_BatchSetDynamicFees() public {
-        // Create another pool
         MockToken link = new MockToken("Chainlink", "LINK", 18, false);
 
         (address t0, address t1) =
@@ -127,7 +139,6 @@ contract LVRHookTest is Test {
 
         PoolId linkPoolId = linkUsdcKey.toId();
 
-        // Batch update
         PoolId[] memory poolIds = new PoolId[](2);
         poolIds[0] = poolId;
         poolIds[1] = linkPoolId;
@@ -143,57 +154,61 @@ contract LVRHookTest is Test {
         assertEq(lvrHook.getDynamicFee(linkPoolId), 75000);
     }
 
+    /**
+     * @notice Verifies the ability to reset a pool's fee to the protocol minimum.
+     */
     function test_ResetFee() public {
-        // Set high fee
         vm.prank(owner);
         lvrHook.setDynamicFee(poolId, 200000);
         assertEq(lvrHook.getDynamicFee(poolId), 200000);
 
-        // Reset to minimum
         vm.prank(workflow);
         lvrHook.resetFee(poolId);
-        assertEq(lvrHook.getDynamicFee(poolId), 500); // MIN_FEE
+        assertEq(lvrHook.getDynamicFee(poolId), 500); 
     }
 
-    // ============ BeforeSwap Hook Tests ============
-
+    /**
+     * @notice Verifies that beforeSwap returns the correctly flagged dynamic fee.
+     */
     function test_BeforeSwapReturnsDynamicFee() public {
-        // Set fee
         vm.prank(owner);
-        lvrHook.setDynamicFee(poolId, 100000); // 10%
+        lvrHook.setDynamicFee(poolId, 100000); 
 
-        // Call beforeSwap
         IPoolManager.SwapParams memory params =
             IPoolManager.SwapParams({zeroForOne: true, amountSpecified: -1e18, sqrtPriceLimitX96: 0});
 
         (bytes4 selector, BeforeSwapDelta delta, uint24 fee) = lvrHook.beforeSwap(address(this), poolKey, params, "");
 
         assertEq(selector, IHooks.beforeSwap.selector);
-        // Fee should have override flag set (bit 24)
         assertTrue((fee & 0x800000) != 0);
-        // Extract raw fee
         uint24 rawFee = fee & 0x7FFFFF;
         assertEq(rawFee, 100000);
     }
 
+    /**
+     * @notice Verifies that beforeSwap returns the minimum fee if no dynamic fee is set.
+     */
     function test_BeforeSwapReturnsMinFeeWhenNotSet() public {
-        // Don't set any fee, should return MIN_FEE
         IPoolManager.SwapParams memory params =
             IPoolManager.SwapParams({zeroForOne: true, amountSpecified: -1e18, sqrtPriceLimitX96: 0});
 
         (,, uint24 fee) = lvrHook.beforeSwap(address(this), poolKey, params, "");
 
         uint24 rawFee = fee & 0x7FFFFF;
-        assertEq(rawFee, 500); // MIN_FEE
+        assertEq(rawFee, 500); 
     }
 
-    // ============ Whitelist Tests ============
-
+    /**
+     * @notice Verifies the vault whitelisting functionality.
+     */
     function test_WhitelistVault() public {
         assertTrue(lvrHook.isVaultWhitelisted(vault));
         assertFalse(lvrHook.isVaultWhitelisted(attacker));
     }
 
+    /**
+     * @notice Verifies that whitelisted vaults can successfully provide liquidity.
+     */
     function test_BeforeAddLiquidityWhitelistedPasses() public {
         IPoolManager.ModifyLiquidityParams memory params = IPoolManager.ModifyLiquidityParams({
             tickLower: -887220, tickUpper: 887220, liquidityDelta: 1000, salt: bytes32(0)
@@ -203,6 +218,9 @@ contract LVRHookTest is Test {
         assertEq(selector, IHooks.beforeAddLiquidity.selector);
     }
 
+    /**
+     * @notice Ensures that non-whitelisted addresses cannot provide liquidity.
+     */
     function test_BeforeAddLiquidityNonWhitelistedReverts() public {
         IPoolManager.ModifyLiquidityParams memory params = IPoolManager.ModifyLiquidityParams({
             tickLower: -887220, tickUpper: 887220, liquidityDelta: 1000, salt: bytes32(0)
@@ -212,6 +230,9 @@ contract LVRHookTest is Test {
         lvrHook.beforeAddLiquidity(attacker, poolKey, params, "");
     }
 
+    /**
+     * @notice Verifies the batch vault whitelisting functionality.
+     */
     function test_BatchSetWhitelistedVaults() public {
         address[] memory vaults = new address[](3);
         vaults[0] = makeAddr("vault1");
@@ -231,8 +252,9 @@ contract LVRHookTest is Test {
         assertFalse(lvrHook.isVaultWhitelisted(vaults[2]));
     }
 
-    // ============ Admin Tests ============
-
+    /**
+     * @notice Verifies the ability to update the authorized workflow address.
+     */
     function test_SetWorkflowAuthorizer() public {
         address newWorkflow = makeAddr("newWorkflow");
 
@@ -241,12 +263,14 @@ contract LVRHookTest is Test {
 
         assertEq(lvrHook.workflowAuthorizer(), newWorkflow);
 
-        // New workflow can now set fees
         vm.prank(newWorkflow);
         lvrHook.setDynamicFee(poolId, 50000);
         assertEq(lvrHook.getDynamicFee(poolId), 50000);
     }
 
+    /**
+     * @notice Verifies the retrieval of detailed fee metadata.
+     */
     function test_GetFeeInfo() public {
         vm.prank(owner);
         lvrHook.setDynamicFee(poolId, 50000);
@@ -255,6 +279,6 @@ contract LVRHookTest is Test {
 
         assertEq(fee, 50000);
         assertEq(lastUpdate, block.timestamp);
-        assertTrue(isHighVolatility); // 5% > 1%
+        assertTrue(isHighVolatility); 
     }
 }

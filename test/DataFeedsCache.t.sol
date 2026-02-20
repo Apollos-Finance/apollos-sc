@@ -4,6 +4,11 @@ pragma solidity ^0.8.20;
 import {Test} from "forge-std/Test.sol";
 import {DataFeedsCache} from "../src/core/DataFeedsCache.sol";
 
+/**
+ * @title DataFeedsCacheTest
+ * @notice Test suite for verifying the DataFeedsCache functionality.
+ * @author Apollos Finance Team
+ */
 contract DataFeedsCacheTest is Test {
     DataFeedsCache public cache;
 
@@ -14,6 +19,9 @@ contract DataFeedsCacheTest is Test {
 
     bytes32 constant WETH_NAV = keccak256("WETH_NAV");
 
+    /**
+     * @notice Sets up the test environment by deploying the cache and configuring a feed.
+     */
     function setUp() public {
         vm.startPrank(owner);
         cache = new DataFeedsCache(updater);
@@ -21,6 +29,9 @@ contract DataFeedsCacheTest is Test {
         vm.stopPrank();
     }
 
+    /**
+     * @notice Verifies that the authorized updater can successfully commit new data.
+     */
     function test_UpdateByUpdater() public {
         vm.prank(updater);
         cache.updateRoundData(WETH_NAV, int256(42 ether), block.timestamp);
@@ -32,6 +43,9 @@ contract DataFeedsCacheTest is Test {
         assertEq(answeredInRound, 1);
     }
 
+    /**
+     * @notice Verifies that both owner and authorized keepers can update data.
+     */
     function test_UpdateByOwnerAndKeeper() public {
         vm.prank(owner);
         cache.setKeeper(keeper, true);
@@ -47,12 +61,18 @@ contract DataFeedsCacheTest is Test {
         assertEq(answer, int256(11 ether));
     }
 
+    /**
+     * @notice Ensures that unauthorized addresses cannot update data feeds.
+     */
     function test_RevertWhenUnauthorized() public {
         vm.prank(attacker);
         vm.expectRevert(DataFeedsCache.NotAuthorized.selector);
         cache.updateRoundData(WETH_NAV, int256(1), block.timestamp);
     }
 
+    /**
+     * @notice Ensures that data updates must have a strictly increasing timestamp.
+     */
     function test_RevertWhenOlderTimestamp() public {
         vm.startPrank(updater);
         cache.updateRoundData(WETH_NAV, int256(100), block.timestamp);
@@ -61,4 +81,3 @@ contract DataFeedsCacheTest is Test {
         vm.stopPrank();
     }
 }
-

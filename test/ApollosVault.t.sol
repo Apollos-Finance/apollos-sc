@@ -22,12 +22,12 @@ import {IApollosFactory} from "../src/interfaces/IApollosFactory.sol";
 
 /**
  * @title ApollosVaultTest
- * @notice Comprehensive test suite for ApollosVault
+ * @notice Comprehensive test suite for verifying the ApollosVault leverage strategy and NAV logic.
+ * @author Apollos Finance Team
  */
 contract ApollosVaultTest is Test {
     using PoolIdLibrary for PoolKey;
 
-    // ============ Contracts ============
     MockToken public weth;
     MockToken public usdc;
     MockUniswapPool public uniswapPool;
@@ -37,38 +37,35 @@ contract ApollosVaultTest is Test {
     ApollosVault public vault;
     PoolKey public poolKey;
 
-    // ============ Users ============
     address public alice = makeAddr("alice");
     address public bob = makeAddr("bob");
     address public rebalancer = makeAddr("rebalancer");
     address public owner;
     DataFeedsCache public dataFeedsCache;
 
-    // ============ Constants ============
     uint256 constant INITIAL_WETH = 100 ether;
     uint256 constant INITIAL_USDC = 200_000 * 1e6;
-    uint256 constant ETH_PRICE = 2000 * 1e8; // $2000
+    uint256 constant ETH_PRICE = 2000 * 1e8; 
     bytes32 constant WETH_NAV = keccak256("WETH_NAV");
 
+    /**
+     * @notice Sets up the test environment by deploying mocks, pools, and initializing the vault.
+     */
     function setUp() public {
         owner = address(this);
 
-        // Deploy tokens
         weth = new MockToken("Wrapped Ether", "WETH", 18, true);
         usdc = new MockToken("USD Coin", "USDC", 6, false);
 
-        // Deploy pools
         uniswapPool = new MockUniswapPool();
         lvrHook = new LVRHook(address(uniswapPool));
         aavePool = new MockAavePool();
 
-        // Configure Aave
         aavePool.configureReserve(address(weth), 7500, 8000, 10500);
         aavePool.configureReserve(address(usdc), 8000, 8500, 10500);
         aavePool.setAssetPrice(address(weth), ETH_PRICE);
         aavePool.setAssetPrice(address(usdc), 1 * 1e8);
 
-        // Create PoolKey
         (address token0, address token1) =
             address(weth) < address(usdc) ? (address(weth), address(usdc)) : (address(usdc), address(weth));
 
@@ -80,13 +77,10 @@ contract ApollosVaultTest is Test {
             hooks: IHooks(address(lvrHook))
         });
 
-        // Initialize pool
         uniswapPool.initialize(poolKey);
 
-        // Deploy factory
         factory = new ApollosFactory(address(aavePool), address(uniswapPool), address(lvrHook), owner);
 
-        // Create vault
         IApollosFactory.VaultParams memory params = IApollosFactory.VaultParams({
             name: "Apollos WETH Vault",
             symbol: "afWETH",
@@ -100,43 +94,38 @@ contract ApollosVaultTest is Test {
         address vaultAddr = factory.createVault(params);
         vault = ApollosVault(vaultAddr);
 
-        // Configure permissions
         uniswapPool.setWhitelistedVault(address(vault), true);
         lvrHook.setWhitelistedVault(address(vault), true);
         aavePool.setWhitelistedBorrower(address(vault), true);
         aavePool.setCreditLimit(address(vault), address(usdc), 10_000_000 * 1e6);
         vault.setRebalancer(rebalancer, true);
 
-        // Investor supplies quote asset and delegates to vault
         usdc.mintTo(owner, 10_000_000 * 1e6);
         usdc.approve(address(aavePool), 10_000_000 * 1e6);
         aavePool.supply(address(usdc), 10_000_000 * 1e6, owner, 0);
         aavePool.setCreditDelegation(address(vault), address(usdc), 10_000_000 * 1e6);
 
-        // Fund users
         weth.mintTo(alice, INITIAL_WETH);
         weth.mintTo(bob, INITIAL_WETH);
         usdc.mintTo(alice, INITIAL_USDC);
         usdc.mintTo(bob, INITIAL_USDC);
 
-        // Seed initial LP (needed for proper ratio)
         _seedInitialLiquidity();
     }
 
+    /**
+     * @notice Seeds the Uniswap pool with initial base and quote assets.
+     */
     function _seedInitialLiquidity() internal {
-        // Add initial liquidity to pool so ratios work
         weth.mintTo(address(this), 10 ether);
         usdc.mintTo(address(this), 20_000 * 1e6);
 
         weth.approve(address(uniswapPool), 10 ether);
         usdc.approve(address(uniswapPool), 20_000 * 1e6);
 
-        // Temporarily whitelist this contract
         uniswapPool.setWhitelistedVault(address(this), true);
         lvrHook.setWhitelistedVault(address(this), true);
 
-        // addLiquidity expects (amount0, amount1) where currency0 < currency1 by address
-        // Need to pass amounts in the correct order
         (uint256 amount0, uint256 amount1) = address(weth) < address(usdc)
             ? (uint256(10 ether), uint256(20_000 * 1e6))
             : (uint256(20_000 * 1e6), uint256(10 ether));
@@ -144,8 +133,9 @@ contract ApollosVaultTest is Test {
         uniswapPool.addLiquidity(poolKey, amount0, amount1, 0, 0);
     }
 
-    // ============ Deposit Tests ============
-
+    /**
+     * @notice Verifies successful asset deposit and leveraged share issuance.
+     */
     function test_Deposit_Success() public {
         uint256 depositAmount = 10 ether;
 
@@ -153,7 +143,6 @@ contract ApollosVaultTest is Test {
         weth.approve(address(vault), depositAmount);
 
         uint256 sharesBefore = vault.balanceOf(alice);
-        // Changed to use deposit(amount, receiver) for ERC4626 compat
         uint256 shares = vault.deposit(depositAmount, alice);
         uint256 sharesAfter = vault.balanceOf(alice);
 
@@ -164,18 +153,18 @@ contract ApollosVaultTest is Test {
         console.log("Shares received:", shares);
     }
 
+    /**
+     * @notice Verifies that the first deposit results in 1:1 share issuance.
+     */
     function test_Deposit_FirstDeposit_OneToOne() public {
-        // Deploy new tokens for this test to avoid VaultAlreadyExists
         MockToken newWeth = new MockToken("New WETH", "nWETH", 18, true);
         MockToken newUsdc = new MockToken("New USDC", "nUSDC", 6, false);
 
-        // Configure Aave for new tokens
         aavePool.configureReserve(address(newWeth), 7500, 8000, 10500);
         aavePool.configureReserve(address(newUsdc), 8000, 8500, 10500);
         aavePool.setAssetPrice(address(newWeth), ETH_PRICE);
         aavePool.setAssetPrice(address(newUsdc), 1 * 1e8);
 
-        // Create new pool key
         (address t0, address t1) = address(newWeth) < address(newUsdc)
             ? (address(newWeth), address(newUsdc))
             : (address(newUsdc), address(newWeth));
@@ -188,7 +177,6 @@ contract ApollosVaultTest is Test {
         });
         uniswapPool.initialize(newPoolKey);
 
-        // Create fresh vault
         IApollosFactory.VaultParams memory params = IApollosFactory.VaultParams({
             name: "Fresh Vault",
             symbol: "afFRESH",
@@ -202,70 +190,67 @@ contract ApollosVaultTest is Test {
         address freshVaultAddr = factory.createVault(params);
         ApollosVault freshVault = ApollosVault(freshVaultAddr);
 
-        // Configure permissions
         uniswapPool.setWhitelistedVault(freshVaultAddr, true);
         lvrHook.setWhitelistedVault(freshVaultAddr, true);
         aavePool.setWhitelistedBorrower(freshVaultAddr, true);
         aavePool.setCreditLimit(freshVaultAddr, address(newUsdc), 10_000_000 * 1e6);
 
-        // Supply and delegate new USDC backing for fresh vault
         newUsdc.mintTo(owner, 10_000_000 * 1e6);
         newUsdc.approve(address(aavePool), 10_000_000 * 1e6);
         aavePool.supply(address(newUsdc), 10_000_000 * 1e6, owner, 0);
         aavePool.setCreditDelegation(freshVaultAddr, address(newUsdc), 10_000_000 * 1e6);
 
-        // Mint tokens to alice
         newWeth.mintTo(alice, 100 ether);
 
         uint256 depositAmount = 5 ether;
 
         vm.startPrank(alice);
         newWeth.approve(freshVaultAddr, depositAmount);
-        // Changed to use deposit(amount, receiver)
         uint256 shares = freshVault.deposit(depositAmount, alice);
         vm.stopPrank();
 
-        // First deposit should be 1:1
         assertEq(shares, depositAmount, "First deposit should be 1:1");
     }
 
+    /**
+     * @notice Ensures that zero-amount deposits revert.
+     */
     function test_Deposit_RevertZeroAmount() public {
         vm.startPrank(alice);
         weth.approve(address(vault), 1 ether);
 
         vm.expectRevert(IApollosVault.ZeroAmount.selector);
-        // Changed to use deposit(amount, receiver)
         vault.deposit(0, alice);
 
         vm.stopPrank();
     }
 
+    /**
+     * @notice Verifies slippage protection for vault deposits.
+     */
     function test_Deposit_SlippageProtection() public {
         uint256 depositAmount = 10 ether;
-        uint256 minShares = type(uint256).max; // Impossible to satisfy
+        uint256 minShares = type(uint256).max; 
 
         vm.startPrank(alice);
         weth.approve(address(vault), depositAmount);
 
         vm.expectRevert(IApollosVault.SlippageExceeded.selector);
-        // Using depositFor to test slippage logic
         vault.depositFor(depositAmount, alice, minShares);
 
         vm.stopPrank();
     }
 
-    // ============ Withdraw Tests ============
-
+    /**
+     * @notice Verifies successful share redemption and position unwinding.
+     */
     function test_Withdraw_Success() public {
-        // First deposit
         uint256 depositAmount = 10 ether;
 
         vm.startPrank(alice);
         weth.approve(address(vault), depositAmount);
-        // Changed to use deposit(amount, receiver)
         uint256 shares = vault.deposit(depositAmount, alice);
 
-        // Then withdraw half
         uint256 withdrawShares = shares / 2;
         uint256 wethBefore = weth.balanceOf(alice);
 
@@ -279,24 +264,30 @@ contract ApollosVaultTest is Test {
         console.log("WETH received:", amount);
     }
 
+    /**
+     * @notice Ensures withdrawal fails if shares are insufficient.
+     */
     function test_Withdraw_RevertInsufficientShares() public {
         vm.startPrank(alice);
 
         vm.expectRevert(IApollosVault.InsufficientShares.selector);
-        vault.withdraw(1 ether, 0); // Alice has no shares
+        vault.withdraw(1 ether, 0); 
 
         vm.stopPrank();
     }
 
-    // ============ Share Price Tests ============
-
+    /**
+     * @notice Verifies the initial share price valuation.
+     */
     function test_SharePrice_InitialValue() public view {
         uint256 price = vault.getSharePrice();
         console.log("Initial share price:", price);
-        // Should be close to 1e18 or reflect actual value
         assertGt(price, 0, "Price should be positive");
     }
 
+    /**
+     * @notice Ensures previewDeposit matches actual deposit results.
+     */
     function test_PreviewDeposit_Accuracy() public {
         uint256 depositAmount = 5 ether;
 
@@ -304,50 +295,50 @@ contract ApollosVaultTest is Test {
 
         vm.startPrank(alice);
         weth.approve(address(vault), depositAmount);
-        // Changed to use deposit(amount, receiver)
         uint256 actualShares = vault.deposit(depositAmount, alice);
         vm.stopPrank();
 
-        // Preview should equal actual (small tolerance for gas)
         assertEq(previewShares, actualShares, "Preview should match actual");
     }
 
-    // ============ Leverage Tests ============
-
+    /**
+     * @notice Verifies the leverage calculation after a deposit.
+     */
     function test_GetCurrentLeverage() public {
-        // Deposit to create leveraged position
         uint256 depositAmount = 10 ether;
 
         vm.startPrank(alice);
         weth.approve(address(vault), depositAmount);
-        // Changed to use deposit(amount, receiver)
         vault.deposit(depositAmount, alice);
         vm.stopPrank();
 
         uint256 leverage = vault.getCurrentLeverage();
         console.log("Current leverage:", leverage);
 
-        // Should be > 1e18 (1x) due to borrowing
         assertGe(leverage, 1e18, "Leverage should be >= 1x");
     }
 
-    // ============ Health Factor Tests ============
-
+    /**
+     * @notice Verifies health factor tracking.
+     */
     function test_GetHealthFactor() public view {
         uint256 hf = vault.getHealthFactor();
         console.log("Health factor:", hf);
 
-        // No debt = max health factor
         assertEq(hf, type(uint256).max, "No debt should mean max HF");
     }
 
+    /**
+     * @notice Ensures rebalance is not required for a healthy position.
+     */
     function test_NeedsRebalance_False_WhenHealthy() public view {
         bool needed = vault.needsRebalance();
         assertFalse(needed, "Should not need rebalance when healthy");
     }
 
-    // ============ Rebalance Tests ============
-
+    /**
+     * @notice Ensures manual rebalance fails if not authorized or not needed.
+     */
     function test_Rebalance_RevertWhenNotNeeded() public {
         vm.startPrank(rebalancer);
 
@@ -357,6 +348,9 @@ contract ApollosVaultTest is Test {
         vm.stopPrank();
     }
 
+    /**
+     * @notice Ensures rebalance is restricted to authorized roles.
+     */
     function test_Rebalance_OnlyRebalancer() public {
         vm.startPrank(alice);
 
@@ -366,8 +360,9 @@ contract ApollosVaultTest is Test {
         vm.stopPrank();
     }
 
-    // ============ Admin Tests ============
-
+    /**
+     * @notice Verifies the ability to update leverage parameters.
+     */
     function test_UpdateConfig() public {
         uint256 newTarget = 1.8e18;
         uint256 newMax = 2.2e18;
@@ -381,6 +376,9 @@ contract ApollosVaultTest is Test {
         assertEq(config.rebalanceThreshold, newThreshold);
     }
 
+    /**
+     * @notice Verifies that operations are blocked when the vault is paused.
+     */
     function test_SetPaused() public {
         vault.setPaused(true);
 
@@ -388,53 +386,47 @@ contract ApollosVaultTest is Test {
         weth.approve(address(vault), 1 ether);
 
         vm.expectRevert(IApollosVault.VaultPaused.selector);
-        // Changed to use deposit(amount, receiver)
         vault.deposit(1 ether, alice);
 
         vm.stopPrank();
     }
 
-    // ============ Emergency Withdraw Tests ============
-
+    /**
+     * @notice Verifies basic emergency withdrawal functionality.
+     */
     function test_EmergencyWithdraw() public {
-        // Deposit first
         uint256 depositAmount = 10 ether;
 
         vm.startPrank(alice);
         weth.approve(address(vault), depositAmount);
-        // Changed to use deposit(amount, receiver)
         uint256 shares = vault.deposit(depositAmount, alice);
 
-        // Emergency withdraw
         uint256 wethBefore = weth.balanceOf(alice);
         uint256 amount = vault.emergencyWithdraw(shares);
         uint256 wethAfter = weth.balanceOf(alice);
 
         vm.stopPrank();
 
-        // Should receive something (may be less than deposit due to LP distribution)
         console.log("Emergency withdraw amount:", amount);
         assertEq(wethAfter - wethBefore, amount, "Should receive WETH");
     }
 
-    // ============ Integration Tests ============
-
+    /**
+     * @notice Tests the complete lifecycle of a leveraged position.
+     */
     function test_FullLeverageFlow() public {
         console.log("=== Full 2x Leverage Flow ===");
 
-        // 1. Alice deposits 10 WETH
         uint256 depositAmount = 10 ether;
 
         vm.startPrank(alice);
         weth.approve(address(vault), depositAmount);
-        // Changed to use deposit(amount, receiver)
         uint256 shares = vault.deposit(depositAmount, alice);
         vm.stopPrank();
 
         console.log("1. Alice deposited", depositAmount / 1e18, "WETH");
         console.log("   Shares received:", shares);
 
-        // 2. Check vault state
         IApollosVault.VaultState memory state = vault.getVaultState();
         console.log("2. Vault State:");
         console.log("   Total Assets:", state.totalBaseAssets);
@@ -442,23 +434,21 @@ contract ApollosVaultTest is Test {
         console.log("   LP Token Value:", state.lpTokenValue);
         console.log("   Current Leverage:", state.currentLeverage);
 
-        // 3. Check share price
         uint256 sharePrice = vault.getSharePrice();
         console.log("3. Share Price:", sharePrice);
 
-        // 4. Alice withdraws
         vm.startPrank(alice);
         uint256 received = vault.withdraw(shares, 0);
         vm.stopPrank();
 
         console.log("4. Alice withdrew", received / 1e18, "WETH");
 
-        // Verify Alice didn't lose too much (some loss expected from fees)
         assertGe(received, depositAmount * 90 / 100, "Should receive at least 90% back");
     }
 
-    // ============ DataFeedsCache Integration Tests ============
-
+    /**
+     * @notice Helper to initialize a mock data feed.
+     */
     function _setupDataFeed(uint256 answer, uint256 updatedAt) internal {
         dataFeedsCache = new DataFeedsCache(owner);
         dataFeedsCache.configureFeed(WETH_NAV, 18);
@@ -466,6 +456,9 @@ contract ApollosVaultTest is Test {
         vault.setDataFeedConfig(address(dataFeedsCache), WETH_NAV, 1800);
     }
 
+    /**
+     * @notice Verifies totalAssets calculation using feed plus flow deltas.
+     */
     function test_TotalAssets_FeedPlusIdle() public {
         _setupDataFeed(50 ether, block.timestamp);
 
@@ -477,6 +470,9 @@ contract ApollosVaultTest is Test {
         assertEq(vault.totalAssets(), 60 ether, "totalAssets should use fresh feed + net flow delta");
     }
 
+    /**
+     * @notice Verifies fallback to on-chain math when the NAV feed is stale.
+     */
     function test_TotalAssets_FallbackToOnchain_WhenFeedStale() public {
         vm.startPrank(alice);
         weth.approve(address(vault), 10 ether);
@@ -492,6 +488,9 @@ contract ApollosVaultTest is Test {
         assertLt(assets, 20 ether, "stale feed should not be used as primary source");
     }
 
+    /**
+     * @notice Verifies successful withdrawal even when capital is deployed in LP.
+     */
     function test_Withdraw_Success_WhenCapitalDeployed() public {
         vm.startPrank(alice);
         weth.approve(address(vault), 10 ether);

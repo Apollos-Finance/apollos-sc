@@ -3,50 +3,77 @@ pragma solidity ^0.8.20;
 
 /**
  * @title IApollosRouter
- * @notice Interface for ApollosRouter - User-facing entry point for Apollos Finance
- * @dev Routes user operations to appropriate vaults:
- *      - Deposit: Routes to correct vault based on asset
- *      - Withdraw: Handles withdrawal from any vault
- *      - Cross-chain: Integrates with CCIP for multi-chain deposits
+ * @notice Interface for the user-facing entry point of Apollos.
+ * @author Apollos Team
+ * @dev This router simplifies user interactions by abstracting vault discovery,
+ *      native token wrapping, and cross-chain messaging complexity.
  */
 interface IApollosRouter {
-    // ============ Structs ============
-
-    /// @notice Parameters for deposit operation
+    /**
+     * @notice Parameters for a standard asset deposit.
+     * @param asset The address of the token to deposit (e.g., WETH, WBTC).
+     * @param amount The quantity of the asset to deposit.
+     * @param minShares Minimum acceptable shares to receive (slippage protection).
+     * @param receiver The address that will receive the vault shares.
+     */
     struct DepositParams {
-        address asset; // Asset to deposit (WETH, WBTC, etc.)
-        uint256 amount; // Amount to deposit
-        uint256 minShares; // Minimum shares to receive (slippage)
-        address receiver; // Address to receive shares
+        address asset;
+        uint256 amount;
+        uint256 minShares;
+        address receiver;
     }
 
-    /// @notice Parameters for withdraw operation
+    /**
+     * @notice Parameters for a standard vault withdrawal.
+     * @param vault The address of the ApollosVault to withdraw from.
+     * @param shares The number of vault shares (afTokens) to burn.
+     * @param minAmount Minimum acceptable quantity of base assets to receive.
+     * @param receiver The address that will receive the base assets.
+     */
     struct WithdrawParams {
-        address vault; // Vault to withdraw from
-        uint256 shares; // Shares to burn
-        uint256 minAmount; // Minimum asset to receive
-        address receiver; // Address to receive assets
+        address vault;
+        uint256 shares;
+        uint256 minAmount;
+        address receiver;
     }
 
-    /// @notice Parameters for cross-chain deposit
+    /**
+     * @notice Parameters for initiating a cross-chain deposit via CCIP.
+     * @param destinationChainSelector The CCIP selector for the target blockchain.
+     * @param destinationRouter The address of the CCIPReceiver on the target chain.
+     * @param asset The address of the asset to send from the source chain (e.g., USDC).
+     * @param amount The quantity of the asset to bridge.
+     * @param minShares Minimum acceptable shares to receive on the destination chain.
+     * @param receiver The final beneficiary address on the destination chain.
+     * @param targetBaseAsset The base asset of the target vault on the destination chain.
+     */
     struct CrossChainDepositParams {
-        uint64 destinationChainSelector; // CCIP chain selector
-        address destinationRouter; // CCIPReceiver on destination chain
-        address asset; // Asset to send via CCIP (e.g., USDC)
-        uint256 amount; // Amount to deposit
-        uint256 minShares; // Minimum shares
-        address receiver; // Receiver on destination chain
-        address targetBaseAsset; // Target vault base asset on dest chain (WETH/WBTC/LINK)
+        uint64 destinationChainSelector;
+        address destinationRouter;
+        address asset;
+        uint256 amount;
+        uint256 minShares;
+        address receiver;
+        address targetBaseAsset;
     }
 
-    // ============ Events ============
+    
 
+    /**
+     * @notice Emitted when a local deposit operation is completed.
+     */
     event Deposit(
         address indexed user, address indexed vault, address indexed asset, uint256 amount, uint256 sharesReceived
     );
 
+    /**
+     * @notice Emitted when a local withdrawal operation is completed.
+     */
     event Withdraw(address indexed user, address indexed vault, uint256 sharesBurned, uint256 amountReceived);
 
+    /**
+     * @notice Emitted when a cross-chain deposit is successfully initiated.
+     */
     event CrossChainDepositInitiated(
         bytes32 indexed messageId,
         uint64 indexed destinationChainSelector,
@@ -55,6 +82,9 @@ interface IApollosRouter {
         uint256 amount
     );
 
+    /**
+     * @notice Emitted when an incoming cross-chain deposit message is received.
+     */
     event CrossChainDepositReceived(
         bytes32 indexed messageId,
         uint64 indexed sourceChainSelector,
@@ -63,135 +93,138 @@ interface IApollosRouter {
         uint256 sharesReceived
     );
 
-    // ============ Errors ============
+   
 
+    /// @notice Thrown when a zero amount is provided for an operation.
     error ZeroAmount();
+    
+    /// @notice Thrown when a zero address is provided for a critical parameter.
     error ZeroAddress();
+    
+    /// @notice Thrown when a vault for the specified asset cannot be found.
     error VaultNotFound();
+    
+    /// @notice Thrown when the caller has an insufficient token balance.
     error InsufficientBalance();
+    
+    /// @notice Thrown when the shares or assets received are below the user's minimum tolerance.
     error SlippageExceeded();
+    
+    /// @notice Thrown when the asset address provided is not supported by the protocol.
     error UnsupportedAsset();
+    
+    /// @notice Thrown when an invalid CCIP chain selector is provided.
     error InvalidChainSelector();
+    
+    /// @notice Thrown when the provided native token amount is insufficient to cover bridging fees.
     error InsufficientFee();
+    
+    /// @notice Thrown when an unauthorized user attempts to perform a restricted admin action.
     error NotAuthorized();
 
-    // ============ Deposit Functions ============
+    
 
     /**
-     * @notice Deposit asset into appropriate vault
-     * @param params Deposit parameters
-     * @return vault Address of vault deposited to
-     * @return shares Amount of shares received
+     * @notice Deposits an ERC20 asset into its corresponding vault.
+     * @param params Configuration for the deposit.
+     * @return vault The address of the vault where the deposit was routed.
+     * @return shares The quantity of afTokens issued to the receiver.
      */
     function deposit(DepositParams calldata params) external returns (address vault, uint256 shares);
 
     /**
-     * @notice Deposit ETH into WETH vault
-     * @param minShares Minimum shares to receive
-     * @return vault Vault address
-     * @return shares Shares received
+     * @notice Deposits native ETH, wraps it into WETH, and routes it to the WETH vault.
+     * @param minShares Minimum acceptable shares to receive.
+     * @return vault The address of the WETH vault.
+     * @return shares The quantity of afTokens issued to the caller.
      */
     function depositETH(uint256 minShares) external payable returns (address vault, uint256 shares);
 
-    // ============ Withdraw Functions ============
+    
 
     /**
-     * @notice Withdraw from vault
-     * @param params Withdraw parameters
-     * @return amount Amount of assets received
+     * @notice Withdraws assets from a specific vault by burning shares.
+     * @param params Configuration for the withdrawal.
+     * @return amount The quantity of base assets returned to the receiver.
      */
     function withdraw(WithdrawParams calldata params) external returns (uint256 amount);
 
     /**
-     * @notice Withdraw from vault and receive ETH (for WETH vault)
-     * @param vault Vault address
-     * @param shares Shares to burn
-     * @param minAmount Minimum ETH to receive
-     * @return amount ETH received
+     * @notice Withdraws from a WETH vault, unwraps the WETH, and returns native ETH.
+     * @param vault The address of the WETH vault.
+     * @param shares The number of shares to burn.
+     * @param minAmount Minimum acceptable native ETH to receive.
+     * @return amount The quantity of native ETH returned to the caller.
      */
     function withdrawETH(address vault, uint256 shares, uint256 minAmount) external returns (uint256 amount);
 
-    // ============ Cross-Chain Functions (CCIP) ============
+    
 
     /**
-     * @notice Initiate cross-chain deposit
-     * @param params Cross-chain deposit parameters
-     * @return messageId CCIP message ID
+     * @notice Initiates a bridge and deposit operation across chains.
+     * @param params Configuration for the cross-chain operation.
+     * @return messageId The unique identifier generated by Chainlink CCIP.
      */
     function depositCrossChain(CrossChainDepositParams calldata params) external payable returns (bytes32 messageId);
 
     /**
-     * @notice Get fee for cross-chain deposit
-     * @param destinationChainSelector Target chain selector
-     * @param asset Asset to deposit
-     * @param amount Amount to deposit
-     * @return fee Required CCIP fee in native token
+     * @notice Estimates the native token fee required for a cross-chain deposit.
+     * @param destinationChainSelector Target blockchain identifier.
+     * @param asset Asset address to bridge.
+     * @param amount Quantity of tokens to bridge.
+     * @return fee Estimated fee in native currency (e.g., ETH).
      */
     function getCrossChainFee(uint64 destinationChainSelector, address asset, uint256 amount)
         external
         view
         returns (uint256 fee);
 
-    // ============ View Functions ============
+    
 
     /**
-     * @notice Get vault for an asset
-     * @param asset Asset address
-     * @return vault Vault address (address(0) if not found)
+     * @notice Returns the ApollosVault address associated with a specific asset.
      */
     function getVaultForAsset(address asset) external view returns (address vault);
 
     /**
-     * @notice Get all supported assets
-     * @return assets Array of supported asset addresses
+     * @notice Returns an array of all asset addresses currently supported for routing.
      */
     function getSupportedAssets() external view returns (address[] memory assets);
 
     /**
-     * @notice Preview deposit - get expected shares
-     * @param asset Asset to deposit
-     * @param amount Amount to deposit
-     * @return vault Vault that would be used
-     * @return shares Expected shares
+     * @notice Simulates a deposit to estimate the shares that would be received.
      */
     function previewDeposit(address asset, uint256 amount) external view returns (address vault, uint256 shares);
 
     /**
-     * @notice Preview withdraw - get expected amount
-     * @param vault Vault address
-     * @param shares Shares to burn
-     * @return amount Expected asset amount
+     * @notice Simulates a withdrawal to estimate the assets that would be returned.
      */
     function previewWithdraw(address vault, uint256 shares) external view returns (uint256 amount);
 
     /**
-     * @notice Get factory address
+     * @notice Returns the address of the ApollosFactory.
      */
     function factory() external view returns (address);
 
     /**
-     * @notice Get WETH address
+     * @notice Returns the address of the WETH token.
      */
     function weth() external view returns (address);
 
     /**
-     * @notice Get CCIP Router address
+     * @notice Returns the address of the local Chainlink CCIP Router.
      */
     function ccipRouter() external view returns (address);
 
-    // ============ Admin Functions ============
+    
 
     /**
-     * @notice Set mapping from asset to vault
-     * @param asset Asset address
-     * @param vault Vault address
+     * @notice Updates the routing mapping for a specific asset.
      */
     function setAssetVault(address asset, address vault) external;
 
     /**
-     * @notice Set supported chain selector
-     * @param chainSelector CCIP chain selector
-     * @param supported True to support, false to remove
+     * @notice Updates the support status for a specific target chain.
      */
     function setSupportedChain(uint64 chainSelector, bool supported) external;
 }

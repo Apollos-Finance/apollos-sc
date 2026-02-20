@@ -8,12 +8,10 @@ import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
-// V4 Core Types
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
 import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
 import {PoolIdLibrary} from "@uniswap/v4-core/src/types/PoolId.sol";
 
-// Interfaces
 import {IApollosVault} from "../interfaces/IApollosVault.sol";
 import {IMockAavePool} from "../interfaces/IMockAavePool.sol";
 import {IMockUniswapPool} from "../interfaces/IMockUniswapPool.sol";
@@ -21,59 +19,116 @@ import {IDataFeedsCache} from "../interfaces/IDataFeedsCache.sol";
 
 /**
  * @title ApollosVault
- * @notice ERC4626 leveraged vault with feed-priority NAV and on-chain fallback.
- * @dev Fresh feed path: totalAssets = cachedNAV + netFlowSinceLastUpdate.
- *      Stale feed path (> maxOracleAge): totalAssets = realtime on-chain NAV.
+ * @notice ERC4626 Leveraged Yield Vault with Hybrid NAV system.
+ * @author Apollos Team
+ * @dev This vault employs a 2x leverage strategy by borrowing quote assets from Aave 
+ *      and providing liquidity to Uniswap V4. It uses a "Hybrid NAV" system:
+ *      - Priority Path: Off-chain computed NAV from Chainlink Workflows + Real-time Flow Deltas.
+ *      - Fallback Path: Real-time on-chain math valuation (used when feed is stale).
  */
 contract ApollosVault is IApollosVault, ERC4626, Ownable, ReentrancyGuard {
     using SafeERC20 for IERC20;
     using PoolIdLibrary for PoolKey;
-
-    // ============ Constants ============
+    
+    /// @notice Precision multiplier for internal math (18 decimals).
     uint256 public constant PRECISION = 1e18;
+    
+    /// @notice Basis points denominator (100% = 10000).
     uint256 public constant BPS = 10000;
-    uint256 public constant MAX_IDLE_BUFFER_BPS = 3000; // 30%
+    
+    /// @notice Safety cap for the idle withdrawal buffer (30%).
+    uint256 public constant MAX_IDLE_BUFFER_BPS = 3000;
 
-    // ============ Immutables ============
+
+    /// @notice The stable asset borrowed to create leverage (e.g., USDC).
     IERC20 public immutable quoteAsset;
+    
+    /// @notice The simulated Aave V3 Pool used for borrowing.
     IMockAavePool public immutable aavePool;
+    
+    /// @notice The simulated Uniswap V4 Pool used for yield.
     IMockUniswapPool public immutable uniswapPool;
+    
+    /// @notice The V4 PoolKey for this vault's liquidity pair.
     PoolKey public poolKey;
 
-    // ============ State Variables ============
+
+    /// @notice Current leverage strategy configuration.
     VaultConfig public config;
+    
+    /// @notice Pause status of the vault.
     bool public paused;
 
+    /// @notice Maps rebalancer addresses to their authorization status.
     mapping(address => bool) public authorizedRebalancers;
 
+    /// @notice Current LP token balance held by the vault.
     uint256 public lpTokenBalance;
+    
+    /// @notice Protocol fee in basis points.
     uint256 public protocolFee;
+    
+    /// @notice Address where collected fees are sent.
     address public treasury;
+    
+    /// @notice Amount of collected but unwithdrawn protocol fees.
     uint256 public pendingFees;
+    
+    /// @notice Minimum deposit amount to prevent rounding attacks and dust.
     uint256 public MIN_DEPOSIT;
 
+    /// @notice Shared data feed cache for off-chain NAV updates.
     IDataFeedsCache public dataFeedsCache;
+    
+    /// @notice Unique identifier for this vault's NAV feed in the cache.
     bytes32 public navDataId;
+    
+    /// @notice Maximum allowed time (in seconds) before the NAV feed is considered stale.
     uint256 public maxOracleAge;
+    
+    /// @notice Target percentage of assets kept idle for fast withdrawals.
     uint256 public idleBufferBps;
+    
+    /// @notice Cumulative flow delta (deposits - withdrawals) since the last oracle update.
     int256 public netFlowSinceLastUpdate;
+    
+    /// @notice Timestamp of the last processed oracle checkpoint.
     uint256 public lastOracleUpdatedAt;
 
-    // ============ Events ============
+    
+
+    /**
+     * @notice Emitted when the data feed configuration is updated.
+     */
     event DataFeedConfigUpdated(address indexed cache, bytes32 indexed dataId, uint256 maxOracleAge);
+    
+    /**
+     * @notice Emitted when a keeper's authorization status is updated.
+     */
     event KeeperUpdated(address indexed keeper, bool authorized);
+    
+    /**
+     * @notice Emitted when the idle buffer target is changed.
+     */
     event IdleBufferUpdated(uint256 oldBps, uint256 newBps);
+    
+    /**
+     * @notice Emitted when the net flow delta is reset during an oracle synchronization.
+     */
     event NetFlowReset(uint256 oracleUpdatedAt);
 
-    // ============ Errors ============
+    
+
+    /// @notice Thrown when an outdated NAV update method is called.
     error DeprecatedNAVUpdate();
 
-    // ============ Modifiers ============
+    /// @dev Reverts if the vault is paused.
     modifier whenNotPaused() {
         if (paused) revert VaultPaused();
         _;
     }
 
+    /// @dev Reverts if the caller is neither the owner nor an authorized rebalancer.
     modifier onlyRebalancer() {
         if (!authorizedRebalancers[msg.sender] && msg.sender != owner()) {
             revert NotAuthorized();
@@ -81,7 +136,19 @@ contract ApollosVault is IApollosVault, ERC4626, Ownable, ReentrancyGuard {
         _;
     }
 
-    // ============ Constructor ============
+
+    /**
+     * @notice Initializes the ApollosVault.
+     * @param _name Descriptive name for the afToken.
+     * @param _symbol Ticker symbol for the afToken.
+     * @param _baseAsset Underlying asset (e.g., WETH).
+     * @param _quoteAsset Borrowed asset (e.g., USDC).
+     * @param _aavePool Simulated Aave pool address.
+     * @param _uniswapPool Simulated Uniswap pool address.
+     * @param _poolKey Uniswap V4 PoolKey structure.
+     * @param _targetLeverage Desired leverage (1e18 scale).
+     * @param _maxLeverage Emergency deleverage threshold (1e18 scale).
+     */
     constructor(
         string memory _name,
         string memory _symbol,
@@ -121,11 +188,11 @@ contract ApollosVault is IApollosVault, ERC4626, Ownable, ReentrancyGuard {
         }
     }
 
-    // ============ Accountant / NAV Functions ============
+    
 
     /**
-     * @notice Sync checkpoint hook for workflow/manual operator.
-     * @dev Resets net flow delta, intended to be called around oracle NAV update cycles.
+     * @notice Syncs the oracle checkpoint and resets net flow delta.
+     * @dev Called by Chainlink Workflows or manual operators to finalize an NAV update cycle.
      */
     function updateNAV(uint256) external override onlyRebalancer {
         _syncOracleCheckpoint();
@@ -134,9 +201,11 @@ contract ApollosVault is IApollosVault, ERC4626, Ownable, ReentrancyGuard {
     }
 
     /**
-     * @notice Total assets in base units.
-     * @dev Fresh feed: cached NAV + net flow delta.
-     *      Stale/missing feed: realtime on-chain NAV fallback.
+     * @notice Returns the total quantity of base assets managed by the vault.
+     * @dev Implements the Hybrid NAV logic:
+     *      1. If a fresh feed exists: Cached NAV + Flow Delta.
+     *      2. Else: Real-time on-chain fallback calculation.
+     * @return Total assets in base asset units.
      */
     function totalAssets() public view override(ERC4626, IApollosVault) returns (uint256) {
         if (address(dataFeedsCache) != address(0) && navDataId != bytes32(0)) {
@@ -158,10 +227,14 @@ contract ApollosVault is IApollosVault, ERC4626, Ownable, ReentrancyGuard {
         return _getRealtimeNavFromOnchain();
     }
 
-    // ============ Core Functions ============
+    
 
     /**
-     * @notice ERC4626 deposit entrypoint (idle-first)
+     * @notice Standard ERC4626 deposit function.
+     * @dev Automatically deploys assets into the leveraged strategy.
+     * @param assets Amount of base asset to deposit.
+     * @param receiver Recipient of the afTokens.
+     * @return shares Quantity of shares issued.
      */
     function deposit(uint256 assets, address receiver)
         public
@@ -174,6 +247,10 @@ contract ApollosVault is IApollosVault, ERC4626, Ownable, ReentrancyGuard {
         return _deposit(assets, receiver, 0);
     }
 
+    /**
+     * @notice Deposits assets on behalf of another receiver with slippage protection.
+     * @dev Used by the ApollosRouter and CCIP Receiver.
+     */
     function depositFor(uint256 amount, address receiver, uint256 minShares)
         external
         override
@@ -185,6 +262,9 @@ contract ApollosVault is IApollosVault, ERC4626, Ownable, ReentrancyGuard {
         return _deposit(amount, receiver, minShares);
     }
 
+    /**
+     * @dev Internal implementation of the deposit logic including immediate deployment.
+     */
     function _deposit(uint256 amount, address receiver, uint256 minShares) internal returns (uint256 shares) {
         if (amount < MIN_DEPOSIT) revert ZeroAmount();
 
@@ -212,7 +292,11 @@ contract ApollosVault is IApollosVault, ERC4626, Ownable, ReentrancyGuard {
     }
 
     /**
-     * @notice Custom withdraw using shares + minAmount
+     * @notice Withdraws base assets by burning afToken shares.
+     * @dev Automatically removes liquidity and repays debt proportionally to fulfill the withdrawal.
+     * @param shares Number of afTokens to burn.
+     * @param minAmount Minimum acceptable base asset quantity (slippage).
+     * @return amount Final quantity of base assets returned.
      */
     function withdraw(uint256 shares, uint256 minAmount)
         public
@@ -270,10 +354,9 @@ contract ApollosVault is IApollosVault, ERC4626, Ownable, ReentrancyGuard {
     }
 
     /**
-     * @notice Keeper-triggered strategy management
-     * @dev Rebalance can:
-     *      - deploy excess idle capital while preserving idle buffer
-     *      - deleverage when health factor drops below threshold
+     * @notice Rebalances the vault to restore its target leverage ratio.
+     * @dev Called by Chainlink Keepers. Deploys idle capital or deleverages as needed.
+     * @return newLeverage The leverage ratio achieved after rebalancing.
      */
     function rebalance() external override onlyRebalancer nonReentrant returns (uint256 newLeverage) {
         _syncOracleCheckpoint();
@@ -284,10 +367,9 @@ contract ApollosVault is IApollosVault, ERC4626, Ownable, ReentrancyGuard {
 
         uint256 idleBalance = IERC20(asset()).balanceOf(address(this));
         // Keep withdrawal buffer from currently idle liquidity only.
-        // This avoids hard dependency on fresh NAV feed before keeper rebalance execution.
         uint256 targetIdle = (idleBalance * idleBufferBps) / BPS;
 
-        // 1) Deploy excess idle above configured withdrawal buffer.
+        // Deploy excess idle above configured withdrawal buffer.
         if (idleBalance > targetIdle) {
             uint256 deployAmount = idleBalance - targetIdle;
             uint256 borrowAmount = _calculateBorrowAmount(deployAmount);
@@ -302,7 +384,7 @@ contract ApollosVault is IApollosVault, ERC4626, Ownable, ReentrancyGuard {
             }
         }
 
-        // 2) Deleverage if risk threshold is breached.
+        // Deleverage if risk threshold is breached.
         if (needsRebalance()) {
             uint256 lpToRemove = _calculateRebalanceAmount();
             if (lpToRemove > 0 && lpToRemove <= lpTokenBalance) {
@@ -327,17 +409,26 @@ contract ApollosVault is IApollosVault, ERC4626, Ownable, ReentrancyGuard {
         emit Rebalance(oldLeverage, newLeverage, debtRepaid, block.timestamp);
     }
 
+    /**
+     * @notice Allows users to exit positions during protocol emergencies.
+     */
     function emergencyWithdraw(uint256 shares) external override returns (uint256 amount) {
         amount = withdraw(shares, 0);
         emit EmergencyWithdraw(msg.sender, shares, amount);
     }
 
-    // ============ View Functions ============
+    
 
+    /**
+     * @notice Returns the current leverage configuration.
+     */
     function getVaultConfig() external view override returns (VaultConfig memory) {
         return config;
     }
 
+    /**
+     * @notice Returns a detailed snapshot of the vault state.
+     */
     function getVaultState() external view override returns (VaultState memory) {
         return VaultState({
             totalBaseAssets: totalAssets(),
@@ -349,23 +440,38 @@ contract ApollosVault is IApollosVault, ERC4626, Ownable, ReentrancyGuard {
         });
     }
 
+    /**
+     * @notice Overrides previewDeposit to use the hybrid NAV system.
+     */
     function previewDeposit(uint256 amount) public view override(ERC4626, IApollosVault) returns (uint256) {
         return super.previewDeposit(amount);
     }
 
+    /**
+     * @notice Overrides previewWithdraw to use the hybrid NAV system.
+     */
     function previewWithdraw(uint256 shares) public view override(ERC4626, IApollosVault) returns (uint256) {
         return super.previewRedeem(shares);
     }
 
+    /**
+     * @notice Returns the current value of one share in terms of the base asset.
+     */
     function getSharePrice() external view override returns (uint256 price) {
         return convertToAssets(PRECISION);
     }
 
+    /**
+     * @notice Returns the current Aave health factor.
+     */
     function getHealthFactor() public view override returns (uint256 healthFactor) {
         (,,,,, healthFactor) = aavePool.getUserAccountData(address(this));
         if (healthFactor == 0) healthFactor = type(uint256).max;
     }
 
+    /**
+     * @notice Calculates the effective current leverage ratio.
+     */
     function getCurrentLeverage() public view override returns (uint256 leverage) {
         uint256 totalDebt = _getTotalDebt();
         uint256 assets = totalAssets();
@@ -374,31 +480,49 @@ contract ApollosVault is IApollosVault, ERC4626, Ownable, ReentrancyGuard {
         leverage = ((assets + totalDebt) * PRECISION) / assets;
     }
 
+    /**
+     * @notice Checks if the vault requires a rebalance.
+     */
     function needsRebalance() public view override returns (bool needed) {
         uint256 hf = getHealthFactor();
         return hf < config.rebalanceThreshold && hf != type(uint256).max;
     }
 
-    // ============ ERC4626 Conflict Resolution ============
+    
 
+    /**
+     * @notice Returns the number of decimals for vault shares.
+     */
     function decimals() public view override(ERC4626) returns (uint8) {
         return super.decimals();
     }
 
+    /**
+     * @notice Returns the total afToken supply.
+     */
     function totalSupply() public view override(ERC20, IERC20, IApollosVault) returns (uint256) {
         return super.totalSupply();
     }
 
+    /**
+     * @notice Returns the afToken balance of a user.
+     */
     function balanceOf(address account) public view override(ERC20, IERC20, IApollosVault) returns (uint256) {
         return super.balanceOf(account);
     }
 
+    /**
+     * @dev Disables the default ERC4626 withdraw method in favor of the custom one.
+     */
     function withdraw(uint256, address, address) public pure override(ERC4626) returns (uint256) {
         revert("Use withdraw(shares, minAmount)");
     }
 
-    // ============ Admin Functions ============
+    
 
+    /**
+     * @notice Updates the strategy configuration.
+     */
     function updateConfig(uint256 _targetLeverage, uint256 _maxLeverage, uint256 _rebalanceThreshold)
         external
         override
@@ -409,20 +533,32 @@ contract ApollosVault is IApollosVault, ERC4626, Ownable, ReentrancyGuard {
         config.rebalanceThreshold = _rebalanceThreshold;
     }
 
+    /**
+     * @notice Toggles the pause state.
+     */
     function setPaused(bool _paused) external override onlyOwner {
         paused = _paused;
     }
 
+    /**
+     * @notice Authorizes a rebalancer address.
+     */
     function setRebalancer(address rebalancer, bool authorized) external override onlyOwner {
         authorizedRebalancers[rebalancer] = authorized;
         emit KeeperUpdated(rebalancer, authorized);
     }
 
+    /**
+     * @notice Authorizes a keeper address.
+     */
     function setKeeper(address keeper, bool authorized) external override onlyOwner {
         authorizedRebalancers[keeper] = authorized;
         emit KeeperUpdated(keeper, authorized);
     }
 
+    /**
+     * @notice Configures the off-chain data source for NAV updates.
+     */
     function setDataFeedConfig(address cache, bytes32 dataId, uint256 maxAge) external override onlyOwner {
         if (cache == address(0)) revert ZeroAddress();
         if (dataId == bytes32(0) || maxAge == 0) revert InvalidOracleConfig();
@@ -437,11 +573,17 @@ contract ApollosVault is IApollosVault, ERC4626, Ownable, ReentrancyGuard {
         emit DataFeedConfigUpdated(cache, dataId, maxAge);
     }
 
+    /**
+     * @notice Updates the maximum allowed age for the NAV feed.
+     */
     function setMaxOracleAge(uint256 maxAge) external override onlyOwner {
         if (maxAge == 0) revert InvalidOracleConfig();
         maxOracleAge = maxAge;
     }
 
+    /**
+     * @notice Updates the target idle buffer percentage.
+     */
     function setIdleBufferBps(uint256 bps) external override onlyOwner {
         if (bps == 0 || bps > MAX_IDLE_BUFFER_BPS) revert InvalidOracleConfig();
         uint256 oldBps = idleBufferBps;
@@ -449,16 +591,25 @@ contract ApollosVault is IApollosVault, ERC4626, Ownable, ReentrancyGuard {
         emit IdleBufferUpdated(oldBps, bps);
     }
 
+    /**
+     * @notice Updates the protocol treasury address.
+     */
     function setTreasury(address _treasury) external onlyOwner {
         treasury = _treasury;
     }
 
+    /**
+     * @notice Updates the protocol fee.
+     */
     function setProtocolFee(uint256 _fee) external onlyOwner {
         protocolFee = _fee;
     }
 
-    // ============ Internal Functions ============
+    
 
+    /**
+     * @dev Calculates the amount of quote asset to borrow based on the target leverage.
+     */
     function _calculateBorrowAmount(uint256 baseAmount) internal view returns (uint256) {
         uint256 basePrice = aavePool.assetPrices(address(asset()));
         uint256 quotePrice = aavePool.assetPrices(address(quoteAsset));
@@ -474,6 +625,9 @@ contract ApollosVault is IApollosVault, ERC4626, Ownable, ReentrancyGuard {
         return borrowAmount;
     }
 
+    /**
+     * @dev Internal helper to add liquidity to the MockUniswapPool.
+     */
     function _addLiquidity(uint256 baseAmount, uint256 quoteAmount) internal returns (uint256 lpReceived) {
         address currency0 = Currency.unwrap(poolKey.currency0);
         address currency1 = Currency.unwrap(poolKey.currency1);
@@ -500,21 +654,28 @@ contract ApollosVault is IApollosVault, ERC4626, Ownable, ReentrancyGuard {
         if (lpReceived == 0) revert SlippageExceeded();
     }
 
+    /**
+     * @dev Internal helper to remove liquidity.
+     */
     function _removeLiquidity(uint256 lpAmount) internal returns (uint256 baseReceived, uint256 quoteReceived) {
         (baseReceived, quoteReceived) = uniswapPool.removeLiquidity(poolKey, lpAmount, 0, 0);
     }
 
+    /**
+     * @dev Returns total outstanding debt in Aave.
+     */
     function _getTotalDebt() internal view returns (uint256) {
         return aavePool.getUserDebt(address(this), address(quoteAsset));
     }
 
+    /**
+     * @dev Calculates the amount of liquidity to remove to deleverage back to target.
+     */
     function _calculateRebalanceAmount() internal view returns (uint256) {
         uint256 currentLev;
         try this.getCurrentLeverage() returns (uint256 lev) {
             currentLev = lev;
         } catch {
-            // Feed can be stale while workflow is doing rebalance-first then oracle update.
-            // In fallback mode, deleverage in small chunks.
             return lpTokenBalance / 10;
         }
 
@@ -525,6 +686,9 @@ contract ApollosVault is IApollosVault, ERC4626, Ownable, ReentrancyGuard {
         return (lpTokenBalance * excessLeverage) / currentLev;
     }
 
+    /**
+     * @dev Internal helper to safely retrieve current leverage.
+     */
     function _safeGetCurrentLeverage() internal view returns (uint256 leverage) {
         try this.getCurrentLeverage() returns (uint256 lev) {
             return lev;
@@ -533,6 +697,9 @@ contract ApollosVault is IApollosVault, ERC4626, Ownable, ReentrancyGuard {
         }
     }
 
+    /**
+     * @dev Performs the heavy on-chain fallback valuation.
+     */
     function _getRealtimeNavFromOnchain() internal view returns (uint256 totalNav) {
         uint256 idleBase = IERC20(asset()).balanceOf(address(this));
         uint256 idleQuote = IERC20(address(quoteAsset)).balanceOf(address(this));
@@ -544,12 +711,13 @@ contract ApollosVault is IApollosVault, ERC4626, Ownable, ReentrancyGuard {
         uint256 lpValueInBase = _getLPValueInBase();
         uint256 debtInBase = _convertQuoteToBase(totalDebt);
         uint256 strategyNetInBase = lpValueInBase > debtInBase ? (lpValueInBase - debtInBase) : 0;
-
-        // Fallback NAV:
-        // totalAssets = idleBase + convertedIdleQuote + LP_Value - Debt
+                
         return idleBase + idleQuoteInBase + strategyNetInBase;
     }
 
+    /**
+     * @dev Calculates current market value of LP positions in base asset terms.
+     */
     function _getLPValueInBase() internal view returns (uint256 valueInBase) {
         if (lpTokenBalance == 0) return 0;
 
@@ -569,6 +737,9 @@ contract ApollosVault is IApollosVault, ERC4626, Ownable, ReentrancyGuard {
         return baseAmount + _convertQuoteToBase(quoteAmount);
     }
 
+    /**
+     * @dev Converts quote asset quantity to base asset equivalent via Aave price oracle.
+     */
     function _convertQuoteToBase(uint256 quoteAmount) internal view returns (uint256 baseAmount) {
         if (quoteAmount == 0) return 0;
 
@@ -583,6 +754,9 @@ contract ApollosVault is IApollosVault, ERC4626, Ownable, ReentrancyGuard {
         return (quoteValueUsd * (10 ** baseDecimals)) / basePrice;
     }
 
+    /**
+     * @dev Internal helper to swap quote tokens back to base tokens.
+     */
     function _swapQuoteToBase(uint256 quoteAmount) internal returns (uint256 baseOut) {
         if (quoteAmount == 0) return 0;
         if (quoteAmount > uint256(type(int256).max)) revert SlippageExceeded();
@@ -593,6 +767,9 @@ contract ApollosVault is IApollosVault, ERC4626, Ownable, ReentrancyGuard {
         (, baseOut) = uniswapPool.swap(poolKey, zeroForOne, -int256(quoteAmount), 0);
     }
 
+    /**
+     * @dev Internal handler to synchronize the vault state with latest oracle data.
+     */
     function _syncOracleCheckpoint() internal {
         if (address(dataFeedsCache) == address(0) || navDataId == bytes32(0)) return;
 
@@ -604,6 +781,9 @@ contract ApollosVault is IApollosVault, ERC4626, Ownable, ReentrancyGuard {
         }
     }
 
+    /**
+     * @dev Internal helper to apply flow deltas to cached NAV.
+     */
     function _applyNetFlow(uint256 cachedNav, int256 netFlow) internal pure returns (uint256 total) {
         if (netFlow >= 0) {
             total = cachedNav + uint256(netFlow);
@@ -613,16 +793,25 @@ contract ApollosVault is IApollosVault, ERC4626, Ownable, ReentrancyGuard {
         }
     }
 
+    /**
+     * @dev Increases the cumulative net flow delta.
+     */
     function _increaseNetFlow(uint256 amount) internal {
         if (amount > uint256(type(int256).max)) revert InvalidOracleConfig();
         netFlowSinceLastUpdate += int256(amount);
     }
 
+    /**
+     * @dev Decreases the cumulative net flow delta.
+     */
     function _decreaseNetFlow(uint256 amount) internal {
         if (amount > uint256(type(int256).max)) revert InvalidOracleConfig();
         netFlowSinceLastUpdate -= int256(amount);
     }
 
+    /**
+     * @dev Internal helper to retrieve token decimals.
+     */
     function _getDecimals(address token) internal view returns (uint8) {
         try IERC20Metadata(token).decimals() returns (uint8 tokenDecimals) {
             return tokenDecimals;
@@ -632,6 +821,9 @@ contract ApollosVault is IApollosVault, ERC4626, Ownable, ReentrancyGuard {
     }
 }
 
+/**
+ * @dev Minimal interface for token metadata.
+ */
 interface IERC20Metadata {
     function decimals() external view returns (uint8);
 }

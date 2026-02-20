@@ -10,7 +10,8 @@ import {IMockAavePool} from "../src/interfaces/IMockAavePool.sol";
 
 /**
  * @title MockAavePoolTest
- * @notice Tests for MockAavePool - Lending functionality for 2x leverage
+ * @notice Test suite for verifying the simulated lending functionality of MockAavePool.
+ * @author Apollos Finance Team
  */
 contract MockAavePoolTest is Test {
     MockToken public weth;
@@ -22,47 +23,41 @@ contract MockAavePoolTest is Test {
     address public investor = makeAddr("investor");
     address public liquidator = makeAddr("liquidator");
 
-    // Prices in USD with 8 decimals
-    uint256 constant WETH_PRICE = 2000 * 1e8; // $2000
-    uint256 constant USDC_PRICE = 1 * 1e8; // $1
+    uint256 constant WETH_PRICE = 2000 * 1e8; 
+    uint256 constant USDC_PRICE = 1 * 1e8; 
 
+    /**
+     * @notice Sets up the test environment by deploying tokens and the Aave pool mock.
+     */
     function setUp() public {
         vm.startPrank(owner);
 
-        // Deploy tokens
         weth = new MockToken("Wrapped Ether", "WETH", 18, true);
         usdc = new MockToken("USD Coin", "USDC", 6, false);
 
-        // Deploy Aave Pool
         aavePool = new MockAavePool();
 
-        // Configure reserves
-        // WETH: 75% LTV, 80% liquidation threshold, 5% bonus
         aavePool.configureReserve(address(weth), 7500, 8000, 10500);
-
-        // USDC: 80% LTV, 85% liquidation threshold, 5% bonus
         aavePool.configureReserve(address(usdc), 8000, 8500, 10500);
 
-        // Set prices
         aavePool.setAssetPrice(address(weth), WETH_PRICE);
         aavePool.setAssetPrice(address(usdc), USDC_PRICE);
 
-        // Seed pool with USDC liquidity for borrowing
         usdc.mintTo(owner, 1_000_000 * 1e6);
         usdc.approve(address(aavePool), 1_000_000 * 1e6);
         aavePool.seedLiquidity(address(usdc), 1_000_000 * 1e6);
 
         vm.stopPrank();
 
-        // Mint tokens for testing
         weth.mintTo(vault, 100 ether);
         usdc.mintTo(vault, 100_000 * 1e6);
         usdc.mintTo(investor, 1_000_000 * 1e6);
         usdc.mintTo(liquidator, 100_000 * 1e6);
     }
 
-    // ============ Supply Tests ============
-
+    /**
+     * @notice Verifies successful asset supply to the pool.
+     */
     function test_Supply() public {
         vm.startPrank(vault);
         weth.approve(address(aavePool), 10 ether);
@@ -73,6 +68,9 @@ contract MockAavePoolTest is Test {
         vm.stopPrank();
     }
 
+    /**
+     * @notice Verifies supplying assets on behalf of another address.
+     */
     function test_SupplyOnBehalfOf() public {
         address beneficiary = makeAddr("beneficiary");
 
@@ -86,24 +84,23 @@ contract MockAavePoolTest is Test {
         vm.stopPrank();
     }
 
+    /**
+     * @notice Ensures that supplying zero amount reverts.
+     */
     function test_SupplyZeroReverts() public {
         vm.prank(vault);
         vm.expectRevert(IMockAavePool.InvalidAmount.selector);
         aavePool.supply(address(weth), 0, vault, 0);
     }
 
-    // ============ Borrow Tests ============
-
+    /**
+     * @notice Verifies successful borrowing against supplied collateral.
+     */
     function test_Borrow() public {
-        // Supply collateral first
         vm.startPrank(vault);
         weth.approve(address(aavePool), 10 ether);
         aavePool.supply(address(weth), 10 ether, vault, 0);
 
-        // 10 WETH @ $2000 = $20,000 collateral
-        // With 75% LTV = $15,000 available to borrow
-
-        // Borrow 10,000 USDC
         uint256 borrowAmount = 10_000 * 1e6;
         aavePool.borrow(address(usdc), borrowAmount, 2, 0, vault);
 
@@ -113,14 +110,15 @@ contract MockAavePoolTest is Test {
         vm.stopPrank();
     }
 
+    /**
+     * @notice Ensures that borrowing above the LTV limit reverts.
+     */
     function test_BorrowExceedsLTVReverts() public {
         vm.startPrank(vault);
         weth.approve(address(aavePool), 10 ether);
         aavePool.supply(address(weth), 10 ether, vault, 0);
 
-        // Try to borrow more than LTV allows
-        // $20,000 collateral * 75% = $15,000 max
-        uint256 tooMuch = 16_000 * 1e6; // $16,000
+        uint256 tooMuch = 16_000 * 1e6; 
 
         vm.expectRevert(IMockAavePool.InsufficientCollateral.selector);
         aavePool.borrow(address(usdc), tooMuch, 2, 0, vault);
@@ -128,6 +126,9 @@ contract MockAavePoolTest is Test {
         vm.stopPrank();
     }
 
+    /**
+     * @notice Verifies borrowing using delegated credit from another supplier.
+     */
     function test_BorrowWithDelegatedCredit() public {
         vm.prank(owner);
         aavePool.setWhitelistedBorrower(vault, true);
@@ -144,6 +145,9 @@ contract MockAavePoolTest is Test {
         assertEq(aavePool.getUserDebt(vault, address(usdc)), 30_000 * 1e6);
     }
 
+    /**
+     * @notice Ensures that a supplier cannot delegate more than their collateralized balance.
+     */
     function test_CannotDelegateBeyondSuppliedBalance() public {
         vm.prank(owner);
         aavePool.setWhitelistedBorrower(vault, true);
@@ -157,6 +161,9 @@ contract MockAavePoolTest is Test {
         vm.stopPrank();
     }
 
+    /**
+     * @notice Ensures delegation can be reduced but not below the active debt level.
+     */
     function test_DelegationCanBeReducedButNotBelowDebt() public {
         vm.prank(owner);
         aavePool.setWhitelistedBorrower(vault, true);
@@ -179,6 +186,9 @@ contract MockAavePoolTest is Test {
         vm.stopPrank();
     }
 
+    /**
+     * @notice Ensures that delegated collateral cannot be withdrawn without reducing delegation first.
+     */
     function test_CannotWithdrawDelegatedBackingWithoutReducingDelegation() public {
         vm.prank(owner);
         aavePool.setWhitelistedBorrower(vault, true);
@@ -193,10 +203,10 @@ contract MockAavePoolTest is Test {
         vm.stopPrank();
     }
 
-    // ============ Repay Tests ============
-
+    /**
+     * @notice Verifies successful debt repayment.
+     */
     function test_Repay() public {
-        // Setup: Supply and borrow
         vm.startPrank(vault);
         weth.approve(address(aavePool), 10 ether);
         aavePool.supply(address(weth), 10 ether, vault, 0);
@@ -204,7 +214,6 @@ contract MockAavePoolTest is Test {
         uint256 borrowAmount = 10_000 * 1e6;
         aavePool.borrow(address(usdc), borrowAmount, 2, 0, vault);
 
-        // Repay half
         uint256 repayAmount = 5_000 * 1e6;
         usdc.approve(address(aavePool), repayAmount);
         aavePool.repay(address(usdc), repayAmount, 2, vault);
@@ -214,6 +223,9 @@ contract MockAavePoolTest is Test {
         vm.stopPrank();
     }
 
+    /**
+     * @notice Verifies full debt repayment using the max uint256 constant.
+     */
     function test_RepayMax() public {
         vm.startPrank(vault);
         weth.approve(address(aavePool), 10 ether);
@@ -222,7 +234,6 @@ contract MockAavePoolTest is Test {
         uint256 borrowAmount = 10_000 * 1e6;
         aavePool.borrow(address(usdc), borrowAmount, 2, 0, vault);
 
-        // Repay with max uint256
         usdc.approve(address(aavePool), type(uint256).max);
         aavePool.repay(address(usdc), type(uint256).max, 2, vault);
 
@@ -231,14 +242,14 @@ contract MockAavePoolTest is Test {
         vm.stopPrank();
     }
 
-    // ============ Withdraw Tests ============
-
+    /**
+     * @notice Verifies successful collateral withdrawal.
+     */
     function test_Withdraw() public {
         vm.startPrank(vault);
         weth.approve(address(aavePool), 10 ether);
         aavePool.supply(address(weth), 10 ether, vault, 0);
 
-        // Withdraw half
         uint256 balanceBefore = weth.balanceOf(vault);
         aavePool.withdraw(address(weth), 5 ether, vault);
 
@@ -248,41 +259,38 @@ contract MockAavePoolTest is Test {
         vm.stopPrank();
     }
 
+    /**
+     * @notice Ensures withdrawal fails if it would drop the health factor below 1.
+     */
     function test_WithdrawWouldLowerHealthFactorReverts() public {
         vm.startPrank(vault);
         weth.approve(address(aavePool), 10 ether);
         aavePool.supply(address(weth), 10 ether, vault, 0);
 
-        // Borrow at reasonable LTV (10k USDC against 20k WETH = 50% LTV)
         uint256 borrowAmount = 10_000 * 1e6;
         aavePool.borrow(address(usdc), borrowAmount, 2, 0, vault);
 
-        // Try to withdraw too much (would drop health factor below 1)
-        // With 10 ETH ($20k), borrowing 10k, need at least ~$12.5k collateral for HF=1
-        // Withdrawing 8 ETH leaves only 2 ETH ($4k) which would make HF < 1
         vm.expectRevert(IMockAavePool.HealthFactorTooLow.selector);
         aavePool.withdraw(address(weth), 8 ether, vault);
 
         vm.stopPrank();
     }
 
-    // ============ Health Factor Tests ============
-
+    /**
+     * @notice Verifies accurate health factor calculation.
+     */
     function test_HealthFactor() public {
         vm.startPrank(vault);
         weth.approve(address(aavePool), 10 ether);
         aavePool.supply(address(weth), 10 ether, vault, 0);
 
-        // Get account data before borrow
         (uint256 collateral1, uint256 debt1,,,, uint256 hf1) = aavePool.getUserAccountData(vault);
         console.log("Before borrow - Collateral:", collateral1);
         console.log("Before borrow - Debt:", debt1);
         console.log("Before borrow - Health Factor:", hf1);
 
-        // Health factor should be max (no debt)
         assertEq(hf1, type(uint256).max);
 
-        // Borrow
         aavePool.borrow(address(usdc), 10_000 * 1e6, 2, 0, vault);
 
         (uint256 collateral2, uint256 debt2,,,, uint256 hf2) = aavePool.getUserAccountData(vault);
@@ -290,32 +298,28 @@ contract MockAavePoolTest is Test {
         console.log("After borrow - Debt:", debt2);
         console.log("After borrow - Health Factor:", hf2);
 
-        // Health factor should be > 1e18 (healthy)
         assertTrue(hf2 > 1e18);
 
         vm.stopPrank();
     }
 
-    // ============ Liquidation Tests ============
-
+    /**
+     * @notice Verifies the liquidation mechanism after a price drop.
+     */
     function test_Liquidation() public {
-        // Setup: Vault supplies and borrows near max
         vm.startPrank(vault);
         weth.approve(address(aavePool), 10 ether);
         aavePool.supply(address(weth), 10 ether, vault, 0);
-        aavePool.borrow(address(usdc), 12_000 * 1e6, 2, 0, vault); // 12k USDC (lower than max to avoid edge case)
+        aavePool.borrow(address(usdc), 12_000 * 1e6, 2, 0, vault); 
         vm.stopPrank();
 
-        // Price drops - now position is liquidatable
         vm.prank(owner);
-        aavePool.setAssetPrice(address(weth), 1400 * 1e8); // $1400 (30% drop)
+        aavePool.setAssetPrice(address(weth), 1400 * 1e8); 
 
-        // Check health factor is below 1
         (,,,,, uint256 hf) = aavePool.getUserAccountData(vault);
         console.log("Health Factor after price drop:", hf);
         assertTrue(hf < 1e18);
 
-        // Liquidator liquidates
         vm.startPrank(liquidator);
         usdc.approve(address(aavePool), 7_000 * 1e6);
 
@@ -325,7 +329,7 @@ contract MockAavePoolTest is Test {
             address(weth),
             address(usdc),
             vault,
-            7_000 * 1e6, // Repay 50% of debt
+            7_000 * 1e6, 
             false
         );
 
@@ -335,23 +339,22 @@ contract MockAavePoolTest is Test {
         console.log("Collateral liquidated:", collateralBefore - collateralAfter);
         console.log("Remaining debt:", debtAfter);
 
-        // Verify debt reduced
         assertTrue(debtAfter < 14_000 * 1e6);
-
-        // Verify liquidator received collateral
         assertTrue(weth.balanceOf(liquidator) > 0);
 
         vm.stopPrank();
     }
 
+    /**
+     * @notice Ensures that healthy positions cannot be liquidated.
+     */
     function test_LiquidationHealthyReverts() public {
         vm.startPrank(vault);
         weth.approve(address(aavePool), 10 ether);
         aavePool.supply(address(weth), 10 ether, vault, 0);
-        aavePool.borrow(address(usdc), 5_000 * 1e6, 2, 0, vault); // Low LTV = healthy
+        aavePool.borrow(address(usdc), 5_000 * 1e6, 2, 0, vault); 
         vm.stopPrank();
 
-        // Try to liquidate healthy position
         vm.startPrank(liquidator);
         usdc.approve(address(aavePool), 2_500 * 1e6);
 
@@ -361,39 +364,28 @@ contract MockAavePoolTest is Test {
         vm.stopPrank();
     }
 
-    // ============ 2x Leverage Flow Test ============
-
+    /**
+     * @notice Tests the fundamental 2x leverage borrowing sequence.
+     */
     function test_TwoXLeverageFlow() public {
         console.log("=== 2x Leverage Flow Test ===");
 
-        // Step 1: Vault deposits 10 WETH
         vm.startPrank(vault);
         weth.approve(address(aavePool), 10 ether);
         aavePool.supply(address(weth), 10 ether, vault, 0);
         console.log("Step 1: Supplied 10 WETH as collateral");
 
-        // Step 2: Calculate available borrows
         (,, uint256 availableBorrows,,,) = aavePool.getUserAccountData(vault);
         console.log("Available to borrow (USD):", availableBorrows);
 
-        // Step 3: Borrow USDC (equivalent to ~10 WETH in value for 2x leverage)
-        // 10 WETH @ $2000 = $20,000
-        // Borrow $10,000 USDC for 2x total exposure
         uint256 borrowAmount = 10_000 * 1e6;
         aavePool.borrow(address(usdc), borrowAmount, 2, 0, vault);
         console.log("Step 3: Borrowed 10,000 USDC");
 
-        // Verify state
         (uint256 collateral, uint256 debt,,,, uint256 hf) = aavePool.getUserAccountData(vault);
         console.log("Final collateral (USD):", collateral);
         console.log("Final debt (USD):", debt);
         console.log("Health factor:", hf);
-
-        // Now vault has:
-        // - 10 WETH in collateral
-        // - 10,000 USDC borrowed
-        // Total exposure: $30,000 ($20k WETH + $10k USDC)
-        // Effective leverage: 1.5x on the $20k
 
         assertTrue(hf > 1e18, "Should be healthy");
         assertEq(aavePool.getUserCollateral(vault, address(weth)), 10 ether);

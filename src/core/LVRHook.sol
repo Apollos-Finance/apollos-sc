@@ -3,7 +3,6 @@ pragma solidity ^0.8.20;
 
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 
-// V4 Core Types & Interfaces
 import {IHooks} from "@uniswap/v4-core/src/interfaces/IHooks.sol";
 import {IPoolManager} from "@uniswap/v4-core/src/interfaces/IPoolManager.sol";
 import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
@@ -13,72 +12,103 @@ import {BeforeSwapDelta, BeforeSwapDeltaLibrary} from "@uniswap/v4-core/src/type
 
 /**
  * @title LVRHook
- * @notice Uniswap V4 Hook for LVR (Loss-Versus-Rebalancing) Protection
- * @dev Implements IHooks interface:
- *      - beforeSwap: Returns dynamic fee based on market volatility (set by Chainlink Workflow)
- *      - beforeAddLiquidity: Restricts deposits to whitelisted ApollosVaults only
- *
- * Integration with Chainlink Workflow:
- *      - lvr-protection.ts fetches Binance OHLCV data
- *      - Gemini AI analyzes volatility & sentiment
- *      - Workflow calls setDynamicFee() with new fee based on risk score
+ * @notice Uniswap V4 Hook for Loss-Versus-Rebalancing (LVR) protection.
+ * @author Apollos Team
+ * @dev This hook implements dynamic swap fees based on real-time market volatility analysis.
+ *      Key features:
+ *      - `beforeSwap`: Injects a dynamic fee calculated off-chain by Chainlink Workflows.
+ *      - `beforeAddLiquidity`: Restricts liquidity provision to whitelisted protocol vaults only.
+ *      - Time-lock Fallback: Automatically resets fees to a safe minimum if updates are stale.
  */
 contract LVRHook is IHooks, Ownable {
     using PoolIdLibrary for PoolKey;
 
-    // ============ Constants ============
-    /// @notice Flag to indicate dynamic fee override (bit 24 = 0x800000)
-    /// @dev MUST match DYNAMIC_FEE_FLAG in MockUniswapPool.sol
+    /// @notice Flag used by the Pool Manager to recognize a dynamic fee override (bit 24).
     uint24 public constant OVERRIDE_FEE_FLAG = 0x800000;
 
-    /// @notice Maximum allowed dynamic fee (50% = 500000 in V4 format)
+    /// @notice Maximum safety cap for the dynamic swap fee (50%).
     uint24 public constant MAX_DYNAMIC_FEE = 500000;
 
-    /// @notice Minimum fee during normal conditions (0.05% = 500)
+    /// @notice Baseline fee applied during periods of low volatility (0.05%).
     uint24 public constant MIN_FEE = 500;
 
-    /// @notice Threshold fee for time-lock fallback (1% = 10000)
+    /// @notice Threshold above which the stale data fallback mechanism is armed (1%).
     uint24 public constant HIGH_FEE_THRESHOLD = 10000;
 
-    /// @notice Time-lock duration before auto-reset (6 hours)
+    /// @notice Maximum allowed time without an update before high fees are reset (6 hours).
     uint256 public constant FALLBACK_TIMEOUT = 6 hours;
 
-    // ============ State Variables ============
-    /// @notice Dynamic fee for each pool (set by Chainlink Workflow)
+
+
+    /// @notice Current dynamic fee configured for each pool identifier.
     mapping(PoolId => uint24) public dynamicFees;
 
-    /// @notice Whitelisted ApollosVault addresses
+    /// @notice Maps addresses to their authorization status for adding liquidity.
     mapping(address => bool) public whitelistedVaults;
 
-    /// @notice Authorized Chainlink Workflow address (can update fees)
+    /// @notice Authorized external address allowed to update dynamic fees.
     address public workflowAuthorizer;
 
-    /// @notice MockUniswapPool address for callback verification
+    /// @notice The Uniswap V4 Pool Manager (or Mock) that performs the callbacks.
     address public poolManager;
 
-    /// @notice Last fee update timestamp per pool
+    /// @notice Records the block timestamp of the last fee update for each pool.
     mapping(PoolId => uint256) public lastFeeUpdate;
 
-    // ============ Events ============
+   
+
+    /**
+     * @notice Emitted when a pool's dynamic fee is updated.
+     */
     event DynamicFeeUpdated(PoolId indexed poolId, uint24 oldFee, uint24 newFee, uint256 timestamp);
+    
+    /**
+     * @notice Emitted when a vault's whitelist status is modified.
+     */
     event VaultWhitelisted(address indexed vault, bool status);
+    
+    /**
+     * @notice Emitted when the authorized workflow address is updated.
+     */
     event WorkflowAuthorizerUpdated(address indexed oldAuthorizer, address indexed newAuthorizer);
+    
+    /**
+     * @notice Emitted when the pool manager address is updated.
+     */
     event PoolManagerUpdated(address indexed oldManager, address indexed newManager);
+    
+    /**
+     * @notice Emitted when an extreme volatility event is logged by the workflow.
+     */
     event HighVolatilityDetected(PoolId indexed poolId, uint24 newFee, string reason);
 
-    // ============ Errors ============
+    
+
+    /// @notice Thrown when an unauthorized caller attempts to update a fee or authorizer.
     error NotAuthorized();
+    
+    /// @notice Thrown when a provided fee value exceeds the safety cap.
     error InvalidFee();
+    
+    /// @notice Thrown when a non-whitelisted address attempts to add liquidity.
     error NotWhitelistedVault();
+    
+    /// @notice Thrown if the callback is received from an unrecognized pool manager.
     error PoolManagerNotSet();
 
-    // ============ Constructor ============
+   
+
+    /**
+     * @notice Initializes the LVRHook.
+     * @param _poolManager Address of the Uniswap V4 Pool Manager.
+     */
     constructor(address _poolManager) Ownable(msg.sender) {
         poolManager = _poolManager;
-        workflowAuthorizer = msg.sender; // Owner starts as authorizer
+        workflowAuthorizer = msg.sender;
     }
 
-    // ============ Modifiers ============
+
+    /// @dev Restricts access to the owner or the authorized workflow account.
     modifier onlyWorkflowOrOwner() {
         if (msg.sender != workflowAuthorizer && msg.sender != owner()) {
             revert NotAuthorized();
@@ -86,28 +116,23 @@ contract LVRHook is IHooks, Ownable {
         _;
     }
 
+    /// @dev Ensures the call originates from the configured pool manager.
     modifier onlyPoolManager() {
         if (msg.sender != poolManager) revert PoolManagerNotSet();
         _;
     }
 
-    // ============ V4 Hook Implementation ============
 
     /**
-     * @notice Called before a swap - returns dynamic fee for LVR protection
-     * @dev Chainlink Workflow updates dynamicFees mapping based on volatility analysis
-     * @param key The pool key
-     * @return selector The function selector
-     * @return delta Zero delta (no token modifications)
-     * @return fee Dynamic fee with override flag set
+     * @notice Callback triggered before a swap occurs in the pool manager.
+     * @dev Calculates and returns the dynamic fee with the override flag set.
+     *      Includes a safety fallback: if high fees are stale (> 6h), they reset to MIN_FEE.
      */
     function beforeSwap(
         address,
-        /* sender */
         PoolKey calldata key,
         IPoolManager.SwapParams calldata,
-        /* params */
-        bytes calldata /* hookData */
+        bytes calldata
     )
         external
         view
@@ -116,46 +141,37 @@ contract LVRHook is IHooks, Ownable {
     {
         PoolId poolId = key.toId();
 
-        // Get current dynamic fee (set by Chainlink Workflow)
         uint24 currentFee = dynamicFees[poolId];
         uint256 lastUpdate = lastFeeUpdate[poolId];
 
-        // TIME-LOCK FALLBACK: If fee is high and stale, auto-reset to MIN_FEE
-        // This prevents the system from being stuck in emergency mode if Workflow dies
+        // TIME-LOCK FALLBACK
         if (currentFee > HIGH_FEE_THRESHOLD && lastUpdate > 0) {
             uint256 timeSinceUpdate = block.timestamp - lastUpdate;
             if (timeSinceUpdate > FALLBACK_TIMEOUT) {
-                // Fee is stale (>6 hours) and high (>1%), reset to minimum
                 currentFee = MIN_FEE;
             }
         }
 
-        // If no dynamic fee set, use minimum
         if (currentFee == 0) {
             currentFee = MIN_FEE;
         }
 
-        // Return fee with override flag (tells pool to use this fee)
+        // Apply override flag bit
         uint24 feeWithFlag = currentFee | OVERRIDE_FEE_FLAG;
 
         return (IHooks.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, feeWithFlag);
     }
 
     /**
-     * @notice Called before liquidity is added - restricts to whitelisted vaults
-     * @dev Only ApollosVault contracts should be able to add liquidity
-     * @param sender The address adding liquidity (must be whitelisted)
-     * @return selector The function selector (reverts if not whitelisted)
+     * @notice Callback triggered before liquidity is added.
+     * @dev Validates that the sender is an authorized protocol vault.
      */
     function beforeAddLiquidity(
         address sender,
         PoolKey calldata,
-        /* key */
         IPoolManager.ModifyLiquidityParams calldata,
-        /* params */
-        bytes calldata /* hookData */
+        bytes calldata
     ) external view override returns (bytes4) {
-        // Check if sender is whitelisted ApollosVault
         if (!whitelistedVaults[sender]) {
             revert NotWhitelistedVault();
         }
@@ -163,13 +179,13 @@ contract LVRHook is IHooks, Ownable {
         return IHooks.beforeAddLiquidity.selector;
     }
 
-    // ============ Dynamic Fee Management (Chainlink Workflow) ============
+    
 
     /**
-     * @notice Set dynamic fee for a pool (called by Chainlink Workflow)
-     * @dev This is triggered by lvr-protection.ts when volatility is detected
-     * @param poolId The pool identifier
-     * @param newFee New fee in V4 format (1e6 = 100%)
+     * @notice Updates the dynamic fee for a specific pool.
+     * @dev Called by Chainlink Workflows based on off-chain volatility analysis.
+     * @param poolId The ID of the Uniswap V4 pool.
+     * @param newFee The new fee in basis points (1e6 = 100%).
      */
     function setDynamicFee(PoolId poolId, uint24 newFee) external onlyWorkflowOrOwner {
         if (newFee > MAX_DYNAMIC_FEE) revert InvalidFee();
@@ -182,10 +198,7 @@ contract LVRHook is IHooks, Ownable {
     }
 
     /**
-     * @notice Set dynamic fee with reason (for logging/monitoring)
-     * @param poolId The pool identifier
-     * @param newFee New fee
-     * @param reason Description of why fee changed (e.g., "High CEX-DEX spread")
+     * @notice Updates the dynamic fee and logs a reason for the change.
      */
     function setDynamicFeeWithReason(PoolId poolId, uint24 newFee, string calldata reason)
         external
@@ -202,9 +215,7 @@ contract LVRHook is IHooks, Ownable {
     }
 
     /**
-     * @notice Batch update fees for multiple pools
-     * @param poolIds Array of pool IDs
-     * @param fees Array of fees
+     * @notice Updates dynamic fees for multiple pools in a single batch.
      */
     function batchSetDynamicFees(PoolId[] calldata poolIds, uint24[] calldata fees) external onlyWorkflowOrOwner {
         require(poolIds.length == fees.length, "Length mismatch");
@@ -221,8 +232,7 @@ contract LVRHook is IHooks, Ownable {
     }
 
     /**
-     * @notice Reset fee to minimum (end of high volatility period)
-     * @param poolId The pool identifier
+     * @notice Manually resets a pool's fee to the protocol minimum.
      */
     function resetFee(PoolId poolId) external onlyWorkflowOrOwner {
         uint24 oldFee = dynamicFees[poolId];
@@ -232,12 +242,10 @@ contract LVRHook is IHooks, Ownable {
         emit DynamicFeeUpdated(poolId, oldFee, MIN_FEE, block.timestamp);
     }
 
-    // ============ Vault Whitelist Management ============
+    
 
     /**
-     * @notice Add or remove vault from whitelist
-     * @param vault ApollosVault address
-     * @param status True to whitelist, false to remove
+     * @notice Configures the whitelist status for a vault.
      */
     function setWhitelistedVault(address vault, bool status) external onlyOwner {
         whitelistedVaults[vault] = status;
@@ -245,9 +253,7 @@ contract LVRHook is IHooks, Ownable {
     }
 
     /**
-     * @notice Batch whitelist multiple vaults
-     * @param vaults Array of vault addresses
-     * @param statuses Array of whitelist statuses
+     * @notice Batch configures whitelist status for multiple vaults.
      */
     function batchSetWhitelistedVaults(address[] calldata vaults, bool[] calldata statuses) external onlyOwner {
         require(vaults.length == statuses.length, "Length mismatch");
@@ -258,11 +264,10 @@ contract LVRHook is IHooks, Ownable {
         }
     }
 
-    // ============ Admin Functions ============
+    
 
     /**
-     * @notice Set the Chainlink Workflow authorizer address
-     * @param _authorizer New authorizer address
+     * @notice Updates the authorized workflow authorizer address.
      */
     function setWorkflowAuthorizer(address _authorizer) external onlyOwner {
         address oldAuthorizer = workflowAuthorizer;
@@ -271,8 +276,7 @@ contract LVRHook is IHooks, Ownable {
     }
 
     /**
-     * @notice Set the pool manager address
-     * @param _poolManager New pool manager address
+     * @notice Updates the pool manager address.
      */
     function setPoolManager(address _poolManager) external onlyOwner {
         address oldManager = poolManager;
@@ -280,12 +284,10 @@ contract LVRHook is IHooks, Ownable {
         emit PoolManagerUpdated(oldManager, _poolManager);
     }
 
-    // ============ View Functions ============
+    
 
     /**
-     * @notice Get current dynamic fee for a pool
-     * @param poolId The pool identifier
-     * @return fee Current dynamic fee
+     * @notice Returns the effective dynamic fee for a pool.
      */
     function getDynamicFee(PoolId poolId) external view returns (uint24) {
         uint24 fee = dynamicFees[poolId];
@@ -293,20 +295,14 @@ contract LVRHook is IHooks, Ownable {
     }
 
     /**
-     * @notice Check if a vault is whitelisted
-     * @param vault Address to check
-     * @return True if whitelisted
+     * @notice Checks if a vault address is whitelisted.
      */
     function isVaultWhitelisted(address vault) external view returns (bool) {
         return whitelistedVaults[vault];
     }
 
     /**
-     * @notice Get fee info for a pool
-     * @param poolId The pool identifier
-     * @return fee Current fee
-     * @return lastUpdate Last update timestamp
-     * @return isHighVolatility True if fee > 1% (10000)
+     * @notice Returns comprehensive fee metadata for a pool.
      */
     function getFeeInfo(PoolId poolId) external view returns (uint24 fee, uint256 lastUpdate, bool isHighVolatility) {
         fee = dynamicFees[poolId];
@@ -315,8 +311,7 @@ contract LVRHook is IHooks, Ownable {
         isHighVolatility = fee > 10000; // > 1%
     }
 
-    // ============ Unused Hook Functions (Required by IHooks) ============
-    // These return the selector to indicate they're implemented but do nothing
+    // ============ Unused V4 Hook Placeholders ============
 
     function beforeInitialize(address, PoolKey calldata, uint160) external pure override returns (bytes4) {
         return IHooks.beforeInitialize.selector;

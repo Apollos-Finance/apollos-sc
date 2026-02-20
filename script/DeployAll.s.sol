@@ -23,24 +23,10 @@ import {SourceChainRouter} from "../src/core/SourceChainRouter.sol";
 
 /**
  * @title DeployAll
- * @notice Complete deployment script for Apollos Finance on Arbitrum (main chain)
- * @dev Deploys all contracts in correct order:
- *      1. Mock Tokens (WETH, WBTC, LINK, USDC)
- *      2. MockUniswapPool + LVRHook + MockAavePool
- *      3. ApollosFactory
- *      4. ApollosVaults (WETH/USDC, WBTC/USDC, LINK/USDC)
- *      5. ApollosRouter (local deposits)
- *      6. ApollosCCIPReceiver (cross-chain deposits with Auto-Zapping)
- *      7. Permissions & Configuration
- *      8. Seed Liquidity
- *
- * Cross-chain architecture:
- *      - Source chains (Base): Deploy SourceChainRouter only (see DeploySourceChain)
- *      - Destination chain (Arbitrum): Deploy everything (this script)
- *      - CCIP delivers CCIP-BnM → CCIPReceiver mints MockUSDC 10x → swap → vault
+ * @notice Full system deployment script for Apollos Finance on Arbitrum Sepolia.
+ * @author Apollos Finance Team
  */
 contract DeployAll is Script {
-    // ============ Deployed Contracts ============
     MockToken public weth;
     MockToken public wbtc;
     MockToken public link;
@@ -58,29 +44,24 @@ contract DeployAll is Script {
     ApollosCCIPReceiver public ccipReceiver;
     DataFeedsCache public dataFeedsCache;
 
-    // ============ PoolKeys (stored for CCIPReceiver config) ============
     PoolKey public wethPoolKey;
     PoolKey public wbtcPoolKey;
     PoolKey public linkPoolKey;
 
-    // ============ Configuration ============
-    uint24 constant BASE_FEE = 3000; // 0.3%
+    uint24 constant BASE_FEE = 3000;
     int24 constant TICK_SPACING = 60;
 
-    // CCIP Router addresses per chain (update for your testnet)
-    // Arbitrum Sepolia CCIP Router: https://docs.chain.link/ccip/directory/testnet
     address constant CCIP_ROUTER_ARB_SEPOLIA = 0x2a9C5afB0d0e4BAb2BCdaE109EC4b0c4Be15a165;
-
-    // Base Sepolia chain selector for CCIP
     uint64 constant BASE_SEPOLIA_CHAIN_SELECTOR = 10344971235874465080;
-
-    // Map CCIP-BnM (Arbitrum) → MockUSDC for 10x conversion
     address constant CCIP_BNM_BASE_SEPOLIA = 0x88A2d74F47a237a62e7A51cdDa67270CE381555e;
     address constant CCIP_BNM_ARB_SEPOLIA = 0xA8C0c11bf64AF62CDCA6f93D3769B88BdD7cb93D;
     bytes32 constant WETH_NAV = keccak256("WETH_NAV");
     bytes32 constant WBTC_NAV = keccak256("WBTC_NAV");
     bytes32 constant LINK_NAV = keccak256("LINK_NAV");
 
+    /**
+     * @notice Entry point for the deployment script.
+     */
     function run() external virtual {
         uint256 deployerPrivateKey = vm.envUint("PRIVATE_KEY");
         address deployer = vm.addr(deployerPrivateKey);
@@ -100,7 +81,7 @@ contract DeployAll is Script {
         _deployDataFeedsCache(workflowOperator);
         _deployVaults();
         _deployRouter();
-        _deployCCIPReceiver(deployer); // Updated: Pass deployer to fund reserve
+        _deployCCIPReceiver(deployer);
         _configurePermissions(workflowOperator);
         _seedLiquidity(deployer);
 
@@ -109,8 +90,9 @@ contract DeployAll is Script {
         _printSummary();
     }
 
-    // ============ Step 1: Deploy Tokens ============
-
+    /**
+     * @notice Deploys mock versions of WETH, WBTC, LINK, and USDC.
+     */
     function _deployTokens() internal {
         console.log("--- Step 1: Deploy Mock Tokens ---");
 
@@ -128,41 +110,38 @@ contract DeployAll is Script {
         console.log("");
     }
 
-    // ============ Step 2: Deploy Infrastructure ============
-
+    /**
+     * @notice Deploys and configures Aave, Uniswap, and LVR Hook mocks.
+     */
     function _deployInfrastructure() internal {
         console.log("--- Step 2: Deploy Infrastructure ---");
 
-        // MockUniswapPool
         uniswapPool = new MockUniswapPool();
         console.log("MockUniswapPool:", address(uniswapPool));
 
-        // LVRHook (uses MockUniswapPool as pool manager)
         lvrHook = new LVRHook(address(uniswapPool));
         console.log("LVRHook:", address(lvrHook));
 
-        // MockAavePool
         aavePool = new MockAavePool();
         console.log("MockAavePool:", address(aavePool));
 
-        // Configure Aave reserves (LTV, Liquidation Threshold, Liquidation Bonus)
-        aavePool.configureReserve(address(weth), 7500, 8000, 10500); // 75% LTV, 80% liq, 5% bonus
-        aavePool.configureReserve(address(wbtc), 7000, 7500, 10500); // 70% LTV, 75% liq, 5% bonus
-        aavePool.configureReserve(address(link), 6500, 7000, 10500); // 65% LTV, 70% liq, 5% bonus
-        aavePool.configureReserve(address(usdc), 8000, 8500, 10500); // 80% LTV, 85% liq, 5% bonus
+        aavePool.configureReserve(address(weth), 7500, 8000, 10500);
+        aavePool.configureReserve(address(wbtc), 7000, 7500, 10500);
+        aavePool.configureReserve(address(link), 6500, 7000, 10500);
+        aavePool.configureReserve(address(usdc), 8000, 8500, 10500);
 
-        // Set asset prices (8 decimals, USD denominated)
-        aavePool.setAssetPrice(address(weth), 2000 * 1e8); // $2,000/ETH
-        aavePool.setAssetPrice(address(wbtc), 70000 * 1e8); // $70,000/BTC
-        aavePool.setAssetPrice(address(link), 9 * 1e8); // $9/LINK
-        aavePool.setAssetPrice(address(usdc), 1 * 1e8); // $1/USDC
+        aavePool.setAssetPrice(address(weth), 2000 * 1e8);
+        aavePool.setAssetPrice(address(wbtc), 70000 * 1e8);
+        aavePool.setAssetPrice(address(link), 9 * 1e8);
+        aavePool.setAssetPrice(address(usdc), 1 * 1e8);
 
         console.log("Aave reserves & prices configured");
         console.log("");
     }
 
-    // ============ Step 3: Deploy Factory ============
-
+    /**
+     * @notice Deploys the Apollos Vault Factory.
+     */
     function _deployFactory() internal {
         console.log("--- Step 3: Deploy Factory ---");
 
@@ -170,14 +149,15 @@ contract DeployAll is Script {
             address(aavePool),
             address(uniswapPool),
             address(lvrHook),
-            msg.sender // Treasury = deployer for now
+            msg.sender
         );
         console.log("ApollosFactory:", address(factory));
         console.log("");
     }
 
-    // ============ Step 3.5: Deploy DataFeedsCache ============
-
+    /**
+     * @notice Deploys the off-chain data feed cache for NAV updates.
+     */
     function _deployDataFeedsCache(address workflowOperator) internal {
         console.log("--- Step 3.5: Deploy DataFeedsCache ---");
 
@@ -185,10 +165,8 @@ contract DeployAll is Script {
         console.log("DataFeedsCache:", address(dataFeedsCache));
         console.log("DataFeedsCache updater:", workflowOperator);
 
-        // Keep explicit keeper assignment so workflow address can also call keeper-gated updates.
         dataFeedsCache.setKeeper(workflowOperator, true);
 
-        // Configure one feed id per vault NAV (decimals follow underlying asset)
         dataFeedsCache.configureFeed(WETH_NAV, 18);
         dataFeedsCache.configureFeed(WBTC_NAV, 8);
         dataFeedsCache.configureFeed(LINK_NAV, 18);
@@ -196,31 +174,31 @@ contract DeployAll is Script {
         console.log("");
     }
 
-    // ============ Step 4: Deploy Vaults ============
-
+    /**
+     * @notice Deploys standard leveraged vaults via the Factory.
+     */
     function _deployVaults() internal {
         console.log("--- Step 4: Deploy Vaults ---");
 
-        // WETH/USDC Vault
         (wethVault, wethPoolKey) = _createVault(address(weth), "Apollos WETH Vault", "afWETH");
         console.log("afWETH Vault:", wethVault);
 
-        // WBTC/USDC Vault
         (wbtcVault, wbtcPoolKey) = _createVault(address(wbtc), "Apollos WBTC Vault", "afWBTC");
         console.log("afWBTC Vault:", wbtcVault);
 
-        // LINK/USDC Vault
         (linkVault, linkPoolKey) = _createVault(address(link), "Apollos LINK Vault", "afLINK");
         console.log("afLINK Vault:", linkVault);
 
         console.log("");
     }
 
+    /**
+     * @notice Helper function to initialize Uniswap pools and deploy individual vaults.
+     */
     function _createVault(address baseAsset, string memory name, string memory symbol)
         internal
         returns (address vault, PoolKey memory poolKey)
     {
-        // Create PoolKey (V4 requires currency0 < currency1)
         (address token0, address token1) =
             baseAsset < address(usdc) ? (baseAsset, address(usdc)) : (address(usdc), baseAsset);
 
@@ -232,84 +210,74 @@ contract DeployAll is Script {
             hooks: IHooks(address(lvrHook))
         });
 
-        // Initialize pool in MockUniswapPool
         uniswapPool.initialize(poolKey);
 
-        // Create vault via Factory
         IApollosFactory.VaultParams memory vaultParams = IApollosFactory.VaultParams({
             name: name,
             symbol: symbol,
             baseAsset: baseAsset,
             quoteAsset: address(usdc),
             poolKey: poolKey,
-            targetLeverage: 2e18, // 2x leverage
-            maxLeverage: 2.5e18 // 2.5x max
+            targetLeverage: 2e18,
+            maxLeverage: 2.5e18
         });
 
         vault = factory.createVault(vaultParams);
     }
 
-    // ============ Step 5: Deploy Router (Local Deposits) ============
-
+    /**
+     * @notice Deploys and configures the local ApollosRouter.
+     */
     function _deployRouter() internal {
         console.log("--- Step 5: Deploy Router ---");
 
         router = new ApollosRouter(
             address(factory),
             address(weth),
-            CCIP_ROUTER_ARB_SEPOLIA, // Chainlink CCIP Router on Arbitrum Sepolia
+            CCIP_ROUTER_ARB_SEPOLIA,
             address(usdc)
         );
         console.log("ApollosRouter:", address(router));
 
-        // Set asset → vault mappings
         router.setAssetVault(address(weth), wethVault);
         router.setAssetVault(address(wbtc), wbtcVault);
         router.setAssetVault(address(link), linkVault);
 
-        // Enable Base Sepolia as supported source chain
         router.setSupportedChain(BASE_SEPOLIA_CHAIN_SELECTOR, true);
 
         console.log("Router configured with vault mappings & supported chains");
         console.log("");
     }
 
-    // ============ Step 6: Deploy CCIPReceiver (Cross-Chain) ============
-
+    /**
+     * @notice Deploys the CCIP Receiver and configures Auto-Zap routes.
+     */
     function _deployCCIPReceiver(address deployer) internal {
         console.log("--- Step 6: Deploy CCIPReceiver ---");
 
-        // Deploy CCIPReceiver with Auto-Zapping support
-        // Constructor: ccipRouter, factory, quoteAsset, reserveAsset (USDC), swapPool
         ccipReceiver = new ApollosCCIPReceiver(
-            CCIP_ROUTER_ARB_SEPOLIA, // Chainlink CCIP Router on Arbitrum
-            address(factory), // ApollosFactory for vault lookups
-            address(0), // quoteAsset (unused or generic)
-            address(usdc), // reserveAsset: Real MockUSDC for swap
-            address(uniswapPool) // MockUniswapPool for auto-zap swaps
+            CCIP_ROUTER_ARB_SEPOLIA,
+            address(factory),
+            address(0),
+            address(usdc),
+            address(uniswapPool)
         );
         console.log("ApollosCCIPReceiver:", address(ccipReceiver));
 
-        // --- Fund CCIPReceiver with Reserve USDC (Liquidity Bootstrapping) ---
-        // Mint 100k USDC to deployer then transfer to CCIPReceiver
-        // This acts as the "Reserve" for swapping incoming CCIP-BnM
         uint256 reserveAmount = 1_000_000 * 1e6;
         usdc.mintTo(deployer, reserveAmount);
         usdc.transfer(address(ccipReceiver), reserveAmount);
         console.log("Funded CCIPReceiver with 100k USDC reserve");
 
-        // --- Configure asset → vault mappings ---
         ccipReceiver.setAssetVault(address(weth), wethVault);
         ccipReceiver.setAssetVault(address(wbtc), wbtcVault);
         ccipReceiver.setAssetVault(address(link), linkVault);
         ccipReceiver.setAssetMapping(
-            CCIP_BNM_BASE_SEPOLIA, // Key: Alamat di Base (Source)
-            CCIP_BNM_ARB_SEPOLIA // Value: Alamat di Arbitrum (Fisik yang diterima)
+            CCIP_BNM_BASE_SEPOLIA,
+            CCIP_BNM_ARB_SEPOLIA
         );
         console.log("CCIPReceiver: asset-vault mappings set");
 
-        // --- Configure swap routes (MockUSDC → target base asset) ---
-        // These use the SAME pool keys as the vault LP pools
         ccipReceiver.setSwapConfig(address(weth), wethPoolKey);
         ccipReceiver.setSwapConfig(address(wbtc), wbtcPoolKey);
         ccipReceiver.setSwapConfig(address(link), linkPoolKey);
@@ -318,8 +286,9 @@ contract DeployAll is Script {
         console.log("");
     }
 
-    // ============ Step 7: Configure Permissions ============
-
+    /**
+     * @notice Grants whitelists and authorization between protocol components.
+     */
     function _configurePermissions(address workflowOperator) internal {
         console.log("--- Step 7: Configure Permissions ---");
 
@@ -329,48 +298,35 @@ contract DeployAll is Script {
         for (uint256 i = 0; i < vaults.length; i++) {
             address vault = vaults[i];
 
-            // Whitelist vault in MockUniswapPool (so vault can add LP)
             uniswapPool.setWhitelistedVault(vault, true);
-
-            // Whitelist vault in LVRHook (so hook allows vault's addLiquidity)
             lvrHook.setWhitelistedVault(vault, true);
-
-            // Whitelist vault in MockAavePool (Credit Delegation)
             aavePool.setWhitelistedBorrower(vault, true);
-
-            // Set optional hard cap (delegation still required)
             aavePool.setCreditLimit(vault, address(usdc), 1_000_000 * 1e6);
 
-            // Authorize workflow operator as keeper/rebalancer for Chainlink Workflow.
             ApollosVault(vault).setKeeper(workflowOperator, true);
-            // Backward-compatibility for older integrations that still read setRebalancer path.
             ApollosVault(vault).setRebalancer(workflowOperator, true);
 
-            // Configure shared DataFeedsCache (one dataId per vault)
             ApollosVault(vault).setDataFeedConfig(address(dataFeedsCache), navIds[i], 1800);
         }
 
-        // Whitelist CCIPReceiver in MockUniswapPool (so it can swap for auto-zap)
         uniswapPool.setWhitelistedVault(address(ccipReceiver), true);
 
         console.log("All vaults + CCIPReceiver configured with permissions");
         console.log("");
     }
 
-    // ============ Step 8: Seed Liquidity ============
-
+    /**
+     * @notice Sets up initial liquidity for testing and demonstration.
+     */
     function _seedLiquidity(address deployer) internal {
         console.log("--- Step 8: Seed Liquidity ---");
 
-        // Mint tokens to deployer for initial interactions
-        weth.mintTo(deployer, 100 ether); // 100 WETH
-        wbtc.mintTo(deployer, 5 * 1e8); // 5 WBTC (8 decimals)
-        link.mintTo(deployer, 10_000 ether); // 10,000 LINK
-        usdc.mintTo(deployer, 500_000 * 1e6); // 500k MockUSDC
+        weth.mintTo(deployer, 100 ether);
+        wbtc.mintTo(deployer, 5 * 1e8);
+        link.mintTo(deployer, 10_000 ether);
+        usdc.mintTo(deployer, 500_000 * 1e6);
         console.log("Minted tokens to deployer");
 
-        // Investor-style flow:
-        // Deployer mints investor USDC, supplies it to Aave, then delegates all to Apollos vaults.
         uint256 investorUsdc = 3_000_000 * 1e6;
         address[3] memory vaults = [wethVault, wbtcVault, linkVault];
         uint256 delegationPerVault = investorUsdc / vaults.length;
@@ -385,55 +341,42 @@ contract DeployAll is Script {
 
         console.log("Deployer supplied investor USDC and delegated all to vaults");
 
-        // Seed MockUniswapPool with initial liquidity for all pairs
-        // This is needed so vaults can add liquidity and swaps can work
         _seedPoolLiquidity(deployer);
 
         console.log("");
     }
 
+    /**
+     * @notice Bootsraps Uniswap pools with deep liquidity ($1M TVL each).
+     */
     function _seedPoolLiquidity(address deployer) internal {
         console.log("--- Seeding $1M TVL per Pool ---");
 
-        // 1. UPDATE MINTING: Pastikan saldo deployer cukup untuk $1.5 Juta USDC + Aset
-        // WETH: Butuh 250, kita mint 300 biar aman
         weth.mintTo(deployer, 300 ether);
-        // WBTC: Butuh 7.15, kita mint 10 (Ingat WBTC desimal 8)
         wbtc.mintTo(deployer, 10 * 1e8);
-        // LINK: Butuh 55k, kita mint 60k
         link.mintTo(deployer, 60_000 ether);
-        // USDC: Butuh 500k * 3 pool = 1.5 Juta, kita mint 2 Juta
         usdc.mintTo(deployer, 2_000_000 * 1e6);
 
-        // Approve MockUniswapPool (Sama seperti sebelumnya)
         weth.approve(address(uniswapPool), type(uint256).max);
         wbtc.approve(address(uniswapPool), type(uint256).max);
         link.approve(address(uniswapPool), type(uint256).max);
         usdc.approve(address(uniswapPool), type(uint256).max);
 
-        // Whitelist deployer temporarily
         uniswapPool.setWhitelistedVault(deployer, true);
         lvrHook.setWhitelistedVault(deployer, true);
 
-        // 2. SEED WETH/USDC ($1M TVL)
-        // 250 WETH + 500,000 USDC (Asumsi ETH = $2000)
         {
             (uint256 a0, uint256 a1) = _sortAmounts(address(weth), 250 ether, 500_000 * 1e6);
             uniswapPool.addLiquidity(wethPoolKey, a0, a1, 0, 0);
         }
         console.log("Seeded WETH/USDC pool ($1M TVL)");
 
-        // 3. SEED WBTC/USDC ($1M TVL)
-        // 7.15 WBTC + 500,000 USDC (Asumsi BTC = $70,000)
-        // 7.15 * 10^8 = 715,000,000 satoshi
         {
             (uint256 a0, uint256 a1) = _sortAmounts(address(wbtc), 715000000, 500_000 * 1e6);
             uniswapPool.addLiquidity(wbtcPoolKey, a0, a1, 0, 0);
         }
         console.log("Seeded WBTC/USDC pool ($1M TVL)");
 
-        // 4. SEED LINK/USDC ($1M TVL)
-        // 55,556 LINK + 500,000 USDC (Asumsi LINK = $9)
         {
             (uint256 a0, uint256 a1) = _sortAmounts(address(link), 55556 ether, 500_000 * 1e6);
             uniswapPool.addLiquidity(linkPoolKey, a0, a1, 0, 0);
@@ -442,7 +385,7 @@ contract DeployAll is Script {
     }
 
     /**
-     * @dev Sort amounts to match PoolKey currency ordering (currency0 < currency1)
+     * @dev Internal helper to sort token amounts based on PoolKey ordering.
      */
     function _sortAmounts(address baseAsset, uint256 baseAmount, uint256 quoteAmount)
         internal
@@ -450,16 +393,17 @@ contract DeployAll is Script {
         returns (uint256 amount0, uint256 amount1)
     {
         if (baseAsset < address(usdc)) {
-            amount0 = baseAmount; // baseAsset is currency0
-            amount1 = quoteAmount; // usdc is currency1
+            amount0 = baseAmount;
+            amount1 = quoteAmount;
         } else {
-            amount0 = quoteAmount; // usdc is currency0
-            amount1 = baseAmount; // baseAsset is currency1
+            amount0 = quoteAmount;
+            amount1 = baseAmount;
         }
     }
 
-    // ============ Print Summary ============
-
+    /**
+     * @notice Displays a summary of all deployed contract addresses.
+     */
     function _printSummary() internal view {
         console.log("========================================");
         console.log("=== DEPLOYMENT COMPLETE ===");

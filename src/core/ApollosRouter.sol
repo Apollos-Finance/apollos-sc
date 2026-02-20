@@ -8,12 +8,13 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 import {IRouterClient} from "@chainlink/contracts-ccip/src/v0.8/ccip/interfaces/IRouterClient.sol";
 import {Client} from "@chainlink/contracts-ccip/src/v0.8/ccip/libraries/Client.sol";
 
-// Interfaces
 import {IApollosRouter} from "../interfaces/IApollosRouter.sol";
 import {IApollosVault} from "../interfaces/IApollosVault.sol";
 import {IApollosFactory} from "../interfaces/IApollosFactory.sol";
 
-// WETH Interface
+/**
+ * @notice Minimal interface for standard WETH interactions.
+ */
 interface IWETH {
     function deposit() external payable;
     function withdraw(uint256) external;
@@ -24,36 +25,45 @@ interface IWETH {
 
 /**
  * @title ApollosRouter
- * @notice User-facing entry point for Apollos Finance deposits and withdrawals
- * @dev Routes operations to appropriate vaults:
- *      - Finds vault based on deposited asset
- *      - Handles WETH wrapping for ETH deposits
- *      - Integrates with CCIP for cross-chain deposits
+ * @notice User-facing entry point for local and cross-chain Apollos operations.
+ * @author Apollos Team
+ * @dev This router provides a unified interface for users to deposit and withdraw from multiple vaults.
+ *      It abstracts away the complexities of finding specific vaults, handling native ETH wrapping,
+ *      and initiating cross-chain transfers via Chainlink CCIP.
  */
 contract ApollosRouter is IApollosRouter, Ownable, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
-    // ============ Immutables ============
+    /// @notice The factory contract used for vault discovery.
     IApollosFactory public immutable apollosFactory;
+
+    /// @notice The local WETH token contract.
     IWETH public immutable wethContract;
+
+    /// @notice The address of the Chainlink CCIP Router on this chain.
     address public immutable ccipRouterAddress;
 
-    // ============ State Variables ============
 
-    /// @notice Mapping: asset => vault
+    /// @notice Direct mapping for faster routing: asset => vault.
     mapping(address => address) public assetToVault;
 
-    /// @notice List of supported assets
+    /// @notice List of asset addresses currently supported for direct routing.
     address[] public supportedAssets;
 
-    /// @notice Supported CCIP chain selectors
+    /// @notice Maps CCIP chain selector to its support status for cross-chain deposits.
     mapping(uint64 => bool) public supportedChains;
 
-    /// @notice Quote asset (e.g., USDC) for all vaults
+    /// @notice The global quote asset (stable) used by the protocol.
     address public quoteAsset;
 
-    // ============ Constructor ============
 
+    /**
+     * @notice Initializes the ApollosRouter with mandatory infrastructure addresses.
+     * @param _factory Address of the ApollosFactory.
+     * @param _weth Address of the WETH contract.
+     * @param _ccipRouter Address of the CCIP Router.
+     * @param _quoteAsset Address of the stable quote asset.
+     */
     constructor(address _factory, address _weth, address _ccipRouter, address _quoteAsset) Ownable(msg.sender) {
         if (_factory == address(0) || _weth == address(0)) revert ZeroAddress();
 
@@ -63,13 +73,18 @@ contract ApollosRouter is IApollosRouter, Ownable, ReentrancyGuard {
         quoteAsset = _quoteAsset;
     }
 
-    // ============ Receive ETH ============
+    /**
+     * @notice Fallback function to receive native ETH.
+     */
     receive() external payable {}
 
-    // ============ Deposit Functions ============
+    
 
     /**
-     * @notice Deposit asset into appropriate vault
+     * @notice Deposits an ERC20 asset into the appropriate vault.
+     * @param params Struct containing asset, amount, slippage, and receiver.
+     * @return vault The address of the vault where the assets were deposited.
+     * @return shares The quantity of afTokens issued.
      */
     function deposit(DepositParams calldata params)
         external
@@ -82,13 +97,13 @@ contract ApollosRouter is IApollosRouter, Ownable, ReentrancyGuard {
         vault = _getVaultForAsset(params.asset);
         if (vault == address(0)) revert VaultNotFound();
 
-        // Transfer tokens from user
+        // Transfer tokens from user to this router
         IERC20(params.asset).safeTransferFrom(msg.sender, address(this), params.amount);
 
-        // Approve vault
+        // Approve vault to take tokens from this router
         IERC20(params.asset).safeIncreaseAllowance(vault, params.amount);
 
-        // Deposit to vault
+        // Deposit to vault on behalf of the receiver
         address receiver = params.receiver == address(0) ? msg.sender : params.receiver;
         shares = IApollosVault(vault).depositFor(params.amount, receiver, params.minShares);
 
@@ -96,7 +111,10 @@ contract ApollosRouter is IApollosRouter, Ownable, ReentrancyGuard {
     }
 
     /**
-     * @notice Deposit ETH - wraps to WETH and deposits
+     * @notice Deposits native ETH by wrapping it to WETH and routing to the WETH vault.
+     * @param minShares Minimum acceptable shares to receive.
+     * @return vault The address of the WETH vault.
+     * @return shares The quantity of afTokens issued.
      */
     function depositETH(uint256 minShares)
         external
@@ -122,10 +140,11 @@ contract ApollosRouter is IApollosRouter, Ownable, ReentrancyGuard {
         emit Deposit(msg.sender, vault, address(wethContract), msg.value, shares);
     }
 
-    // ============ Withdraw Functions ============
 
     /**
-     * @notice Withdraw from vault
+     * @notice Withdraws base assets from a specific vault by burning shares.
+     * @param params Struct containing vault, shares, slippage, and receiver.
+     * @return amount The quantity of base assets returned.
      */
     function withdraw(WithdrawParams calldata params) external override nonReentrant returns (uint256 amount) {
         if (params.shares == 0) revert ZeroAmount();
@@ -133,13 +152,13 @@ contract ApollosRouter is IApollosRouter, Ownable, ReentrancyGuard {
 
         IApollosVault vault = IApollosVault(params.vault);
 
-        // Transfer shares from user to router
+        // Transfer shares from user to this router
         IERC20(params.vault).safeTransferFrom(msg.sender, address(this), params.shares);
 
-        // Withdraw from vault
+        // Perform withdrawal from vault (this router receives base assets)
         amount = vault.withdraw(params.shares, params.minAmount);
 
-        // Get base asset and transfer to receiver
+        // Send base assets from router to receiver
         IApollosVault.VaultConfig memory config = vault.getVaultConfig();
         address receiver = params.receiver == address(0) ? msg.sender : params.receiver;
         IERC20(config.baseAsset).safeTransfer(receiver, amount);
@@ -148,7 +167,11 @@ contract ApollosRouter is IApollosRouter, Ownable, ReentrancyGuard {
     }
 
     /**
-     * @notice Withdraw and unwrap to ETH
+     * @notice Withdraws from a WETH vault and unwraps the resulting WETH into native ETH.
+     * @param vault The address of the WETH vault.
+     * @param shares Number of afTokens to burn.
+     * @param minAmount Minimum acceptable native ETH to receive.
+     * @return amount Final quantity of native ETH returned.
      */
     function withdrawETH(address vault, uint256 shares, uint256 minAmount)
         external
@@ -165,27 +188,28 @@ contract ApollosRouter is IApollosRouter, Ownable, ReentrancyGuard {
         IApollosVault.VaultConfig memory config = apollosVault.getVaultConfig();
         if (config.baseAsset != address(wethContract)) revert UnsupportedAsset();
 
-        // Transfer shares from user to router
+        // Transfer shares to router
         IERC20(vault).safeTransferFrom(msg.sender, address(this), shares);
 
-        // Withdraw from vault (receive WETH)
+        // Withdraw from vault (router receives WETH)
         amount = apollosVault.withdraw(shares, minAmount);
 
-        // Unwrap WETH to ETH
+        // Unwrap WETH back to ETH
         wethContract.withdraw(amount);
 
-        // Transfer ETH to user
+        // Transfer native ETH to user
         (bool success,) = msg.sender.call{value: amount}("");
         require(success, "ETH transfer failed");
 
         emit Withdraw(msg.sender, vault, shares, amount);
     }
 
-    // ============ Cross-Chain Functions (CCIP) ============
 
     /**
-     * @notice Initiate cross-chain deposit via CCIP
-     * @dev Simplified for hackathon - full implementation requires CCIP Router
+     * @notice Initiates a cross-chain bridge and deposit operation via Chainlink CCIP.
+     * @dev Transfers tokens to this contract, approves CCIP Router, and sends the message.
+     * @param params Struct containing destination details, asset, and receiver.
+     * @return messageId The unique identifier from Chainlink CCIP.
      */
     function depositCrossChain(CrossChainDepositParams calldata params)
         external
@@ -197,23 +221,23 @@ contract ApollosRouter is IApollosRouter, Ownable, ReentrancyGuard {
         if (params.amount == 0) revert ZeroAmount();
         if (!supportedChains[params.destinationChainSelector]) revert InvalidChainSelector();
 
-        // 1. Ambil Token dari User ke Kontrak ini
+        // Take Token from User
         IERC20(params.asset).safeTransferFrom(msg.sender, address(this), params.amount);
 
-        // 2. Approve Token agar bisa diambil oleh Chainlink Router
+        // Approve CCIP router to take the tokens
         IERC20(params.asset).safeIncreaseAllowance(ccipRouterAddress, params.amount);
 
-        // 3. Encode deposit data (must match ApollosCCIPReceiver decoding)
+        // Encode cross-chain payload (for CCIPReceiver decoding)
         bytes memory depositData = abi.encode(
-            params.asset, // source asset address (USDC)
-            params.amount, // amount to deposit
-            params.minShares, // minimum shares expected
-            params.receiver, // receiver of vault shares
-            msg.sender, // original sender
-            params.targetBaseAsset // target vault base asset (WETH/WBTC/LINK on dest chain)
+            params.asset, 
+            params.amount,
+            params.minShares,
+            params.receiver,
+            msg.sender,
+            params.targetBaseAsset
         );
 
-        // 4. Build CCIP message
+        // Build CCIP message
         Client.EVMTokenAmount[] memory tokenAmounts = new Client.EVMTokenAmount[](1);
         tokenAmounts[0] = Client.EVMTokenAmount({token: params.asset, amount: params.amount});
 
@@ -225,16 +249,15 @@ contract ApollosRouter is IApollosRouter, Ownable, ReentrancyGuard {
             feeToken: address(0) // Pay fee in native ETH
         });
 
-        // 5. Calculate CCIP fee
+        // Calculate and verify CCIP fees
         uint256 fees = IRouterClient(ccipRouterAddress).getFee(params.destinationChainSelector, evm2AnyMessage);
-
         if (msg.value < fees) revert InsufficientFee();
 
-        // 5. KIRIM KE CHAINLINK ROUTER (The Real Action)
+        // Send message to Chainlink Router
         messageId =
             IRouterClient(ccipRouterAddress).ccipSend{value: fees}(params.destinationChainSelector, evm2AnyMessage);
 
-        // 6. Kembalikan sisa ETH (jika ada kembalian fee)
+        // Refund excess ETH to user
         if (msg.value > fees) {
             (bool success,) = msg.sender.call{value: msg.value - fees}("");
             require(success, "Refund failed");
@@ -246,7 +269,7 @@ contract ApollosRouter is IApollosRouter, Ownable, ReentrancyGuard {
     }
 
     /**
-     * @notice Get CCIP fee estimate
+     * @notice Estimates the CCIP bridging fee in native ETH.
      */
     function getCrossChainFee(uint64 destinationChainSelector, address asset, uint256 amount)
         external
@@ -256,7 +279,7 @@ contract ApollosRouter is IApollosRouter, Ownable, ReentrancyGuard {
     {
         if (ccipRouterAddress == address(0)) return 0;
 
-        // Build message to estimate fee
+        // Construct a dummy message for estimation
         Client.EVMTokenAmount[] memory tokenAmounts = new Client.EVMTokenAmount[](1);
         tokenAmounts[0] = Client.EVMTokenAmount({token: asset, amount: amount});
 
@@ -271,26 +294,35 @@ contract ApollosRouter is IApollosRouter, Ownable, ReentrancyGuard {
         fee = IRouterClient(ccipRouterAddress).getFee(destinationChainSelector, message);
     }
 
-    // ============ View Functions ============
+    
 
+    /**
+     * @notice Returns the vault address mapped to a specific asset.
+     */
     function getVaultForAsset(address asset) external view override returns (address) {
         return _getVaultForAsset(asset);
     }
 
+    /**
+     * @dev Internal helper to resolve asset to vault via mapping or factory.
+     */
     function _getVaultForAsset(address asset) internal view returns (address) {
-        // First check direct mapping
         if (assetToVault[asset] != address(0)) {
             return assetToVault[asset];
         }
-
-        // Then check factory
         return apollosFactory.getVault(asset, quoteAsset);
     }
 
+    /**
+     * @notice Returns an array of all asset addresses officially supported for routing.
+     */
     function getSupportedAssets() external view override returns (address[] memory) {
         return supportedAssets;
     }
 
+    /**
+     * @notice Simulates a deposit to estimate the shares that would be issued.
+     */
     function previewDeposit(address asset, uint256 amount)
         external
         view
@@ -303,29 +335,44 @@ contract ApollosRouter is IApollosRouter, Ownable, ReentrancyGuard {
         shares = IApollosVault(vault).previewDeposit(amount);
     }
 
+    /**
+     * @notice Simulates a withdrawal to estimate the assets that would be returned.
+     */
     function previewWithdraw(address vault, uint256 shares) external view override returns (uint256 amount) {
         if (vault == address(0)) return 0;
         amount = IApollosVault(vault).previewWithdraw(shares);
     }
 
+    /**
+     * @notice Returns the ApollosFactory address.
+     */
     function factory() external view override returns (address) {
         return address(apollosFactory);
     }
 
+    /**
+     * @notice Returns the WETH contract address.
+     */
     function weth() external view override returns (address) {
         return address(wethContract);
     }
 
+    /**
+     * @notice Returns the local CCIP Router address.
+     */
     function ccipRouter() external view override returns (address) {
         return ccipRouterAddress;
     }
 
-    // ============ Admin Functions ============
+    
 
+    /**
+     * @notice Updates the routing table for a specific asset.
+     */
     function setAssetVault(address asset, address vault) external override onlyOwner {
         if (asset == address(0)) revert ZeroAddress();
 
-        // Add to supported assets if new
+        // Register as supported asset if new
         if (assetToVault[asset] == address(0) && vault != address(0)) {
             supportedAssets.push(asset);
         }
@@ -333,24 +380,30 @@ contract ApollosRouter is IApollosRouter, Ownable, ReentrancyGuard {
         assetToVault[asset] = vault;
     }
 
+    /**
+     * @notice Enables or disables cross-chain bridging to a specific chain.
+     */
     function setSupportedChain(uint64 chainSelector, bool supported) external override onlyOwner {
         supportedChains[chainSelector] = supported;
     }
 
+    /**
+     * @notice Updates the protocol's global quote asset.
+     */
     function setQuoteAsset(address _quoteAsset) external onlyOwner {
         if (_quoteAsset == address(0)) revert ZeroAddress();
         quoteAsset = _quoteAsset;
     }
 
     /**
-     * @notice Rescue stuck tokens (emergency)
+     * @notice Emergency rescue function for tokens stuck in the contract.
      */
     function rescueTokens(address token, uint256 amount) external onlyOwner {
         IERC20(token).safeTransfer(owner(), amount);
     }
 
     /**
-     * @notice Rescue stuck ETH (emergency)
+     * @notice Emergency rescue function for native ETH stuck in the contract.
      */
     function rescueETH() external onlyOwner {
         (bool success,) = owner().call{value: address(this).balance}("");
