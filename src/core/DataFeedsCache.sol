@@ -8,12 +8,11 @@ import {IDataFeedsCache} from "../interfaces/IDataFeedsCache.sol";
  * @title DataFeedsCache
  * @notice Centralized on-chain storage for off-chain computed data feeds (NAV, Risk Scores, etc.).
  * @author Apollos Team
- * @dev This contract mimics the Chainlink AggregatorV3 interface to provide a familiar integration 
- *      pattern for protocol contracts. It allows authorized keepers to update data values 
+ * @dev This contract mimics the Chainlink AggregatorV3 interface to provide a familiar integration
+ *      pattern for protocol contracts. It allows authorized keepers to update data values
  *      derived from complex off-chain computations (Workflows).
  */
 contract DataFeedsCache is IDataFeedsCache, Ownable {
-    
     /**
      * @notice Data structure representing a single update round for a data feed.
      * @param roundId The sequential identifier for the update.
@@ -32,13 +31,13 @@ contract DataFeedsCache is IDataFeedsCache, Ownable {
 
     /// @notice Thrown when a zero address is provided for a restricted role.
     error ZeroAddress();
-    
+
     /// @notice Thrown when a non-authorized address attempts to update data.
     error NotAuthorized();
-    
+
     /// @notice Thrown when attempting to update a feed that hasn't been initialized.
     error FeedNotConfigured();
-    
+
     /// @notice Thrown when an update contains a timestamp older than the current record.
     error OlderTimestamp();
 
@@ -46,17 +45,17 @@ contract DataFeedsCache is IDataFeedsCache, Ownable {
      * @notice Emitted when the primary updater address is changed.
      */
     event UpdaterSet(address indexed oldUpdater, address indexed newUpdater);
-    
+
     /**
      * @notice Emitted when a keeper's authorization status is modified.
      */
     event KeeperSet(address indexed keeper, bool authorized);
-    
+
     /**
      * @notice Emitted when a new data feed is initialized with its precision metadata.
      */
     event FeedConfigured(bytes32 indexed dataId, uint8 decimals);
-    
+
     /**
      * @notice Emitted when a feed's value is updated.
      */
@@ -64,13 +63,13 @@ contract DataFeedsCache is IDataFeedsCache, Ownable {
 
     /// @notice The primary address authorized to commit data updates.
     address public updater;
-    
+
     /// @notice Maps addresses to their auxiliary keeper authorization status.
     mapping(address => bool) public keepers;
-    
+
     /// @dev Internal mapping storing the latest round data for each feed ID.
     mapping(bytes32 => RoundData) private rounds;
-    
+
     /// @dev Internal mapping storing the decimal precision for each feed ID.
     mapping(bytes32 => uint8) private feedDecimals;
 

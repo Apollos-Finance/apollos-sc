@@ -210,7 +210,7 @@ contract ApollosFactoryTest is Test {
      * @notice Verifies the ability to update the global protocol fee.
      */
     function test_SetProtocolFee() public {
-        uint256 newFee = 500; 
+        uint256 newFee = 500;
 
         factory.setProtocolFee(newFee);
 
@@ -221,7 +221,7 @@ contract ApollosFactoryTest is Test {
      * @notice Ensures that setting an excessively high protocol fee reverts.
      */
     function test_SetProtocolFee_RevertExceedsMax() public {
-        uint256 tooHighFee = 2000; 
+        uint256 tooHighFee = 2000;
 
         vm.expectRevert(IApollosFactory.InvalidParameters.selector);
         factory.setProtocolFee(tooHighFee);

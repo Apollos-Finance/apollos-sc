@@ -31,7 +31,7 @@ contract MockUniswapPool is IMockUniswapPool, Ownable, ReentrancyGuard {
 
     /// @notice Maximum allowed fee in basis points (100% = 1,000,000)
     uint24 public constant MAX_FEE = 1_000_000;
-    
+
     /// @notice Minimum liquidity to be locked on first deposit
     uint256 public constant MINIMUM_LIQUIDITY = 1000;
 
@@ -41,10 +41,10 @@ contract MockUniswapPool is IMockUniswapPool, Ownable, ReentrancyGuard {
 
     /// @notice Maps pool identifier to its current state
     mapping(PoolId => PoolState) private pools;
-    
+
     /// @notice Maps pool identifier to provider to their liquidity position
     mapping(PoolId => mapping(address => LiquidityPosition)) private positions;
-    
+
     /// @notice Maps address to its whitelisted status for liquidity provision
     mapping(address => bool) public whitelistedVaults;
 
@@ -141,10 +141,7 @@ contract MockUniswapPool is IMockUniswapPool, Ownable, ReentrancyGuard {
         // Trigger V4 Hook if present
         if (address(pool.hooks) != address(0)) {
             IPoolManager.ModifyLiquidityParams memory params = IPoolManager.ModifyLiquidityParams({
-                tickLower: -887220, 
-                tickUpper: 887220,
-                liquidityDelta: int256(amount0Desired),
-                salt: bytes32(0)
+                tickLower: -887220, tickUpper: 887220, liquidityDelta: int256(amount0Desired), salt: bytes32(0)
             });
 
             try pool.hooks.beforeAddLiquidity(msg.sender, key, params, "") returns (bytes4 selector) {

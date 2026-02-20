@@ -38,8 +38,6 @@ contract LVRHook is IHooks, Ownable {
     /// @notice Maximum allowed time without an update before high fees are reset (6 hours).
     uint256 public constant FALLBACK_TIMEOUT = 6 hours;
 
-
-
     /// @notice Current dynamic fee configured for each pool identifier.
     mapping(PoolId => uint24) public dynamicFees;
 
@@ -55,48 +53,42 @@ contract LVRHook is IHooks, Ownable {
     /// @notice Records the block timestamp of the last fee update for each pool.
     mapping(PoolId => uint256) public lastFeeUpdate;
 
-   
-
     /**
      * @notice Emitted when a pool's dynamic fee is updated.
      */
     event DynamicFeeUpdated(PoolId indexed poolId, uint24 oldFee, uint24 newFee, uint256 timestamp);
-    
+
     /**
      * @notice Emitted when a vault's whitelist status is modified.
      */
     event VaultWhitelisted(address indexed vault, bool status);
-    
+
     /**
      * @notice Emitted when the authorized workflow address is updated.
      */
     event WorkflowAuthorizerUpdated(address indexed oldAuthorizer, address indexed newAuthorizer);
-    
+
     /**
      * @notice Emitted when the pool manager address is updated.
      */
     event PoolManagerUpdated(address indexed oldManager, address indexed newManager);
-    
+
     /**
      * @notice Emitted when an extreme volatility event is logged by the workflow.
      */
     event HighVolatilityDetected(PoolId indexed poolId, uint24 newFee, string reason);
 
-    
-
     /// @notice Thrown when an unauthorized caller attempts to update a fee or authorizer.
     error NotAuthorized();
-    
+
     /// @notice Thrown when a provided fee value exceeds the safety cap.
     error InvalidFee();
-    
+
     /// @notice Thrown when a non-whitelisted address attempts to add liquidity.
     error NotWhitelistedVault();
-    
+
     /// @notice Thrown if the callback is received from an unrecognized pool manager.
     error PoolManagerNotSet();
-
-   
 
     /**
      * @notice Initializes the LVRHook.
@@ -106,7 +98,6 @@ contract LVRHook is IHooks, Ownable {
         poolManager = _poolManager;
         workflowAuthorizer = msg.sender;
     }
-
 
     /// @dev Restricts access to the owner or the authorized workflow account.
     modifier onlyWorkflowOrOwner() {
@@ -122,18 +113,12 @@ contract LVRHook is IHooks, Ownable {
         _;
     }
 
-
     /**
      * @notice Callback triggered before a swap occurs in the pool manager.
      * @dev Calculates and returns the dynamic fee with the override flag set.
      *      Includes a safety fallback: if high fees are stale (> 6h), they reset to MIN_FEE.
      */
-    function beforeSwap(
-        address,
-        PoolKey calldata key,
-        IPoolManager.SwapParams calldata,
-        bytes calldata
-    )
+    function beforeSwap(address, PoolKey calldata key, IPoolManager.SwapParams calldata, bytes calldata)
         external
         view
         override
@@ -178,8 +163,6 @@ contract LVRHook is IHooks, Ownable {
 
         return IHooks.beforeAddLiquidity.selector;
     }
-
-    
 
     /**
      * @notice Updates the dynamic fee for a specific pool.
@@ -242,8 +225,6 @@ contract LVRHook is IHooks, Ownable {
         emit DynamicFeeUpdated(poolId, oldFee, MIN_FEE, block.timestamp);
     }
 
-    
-
     /**
      * @notice Configures the whitelist status for a vault.
      */
@@ -264,8 +245,6 @@ contract LVRHook is IHooks, Ownable {
         }
     }
 
-    
-
     /**
      * @notice Updates the authorized workflow authorizer address.
      */
@@ -283,8 +262,6 @@ contract LVRHook is IHooks, Ownable {
         poolManager = _poolManager;
         emit PoolManagerUpdated(oldManager, _poolManager);
     }
-
-    
 
     /**
      * @notice Returns the effective dynamic fee for a pool.

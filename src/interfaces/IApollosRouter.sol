@@ -57,8 +57,6 @@ interface IApollosRouter {
         address targetBaseAsset;
     }
 
-    
-
     /**
      * @notice Emitted when a local deposit operation is completed.
      */
@@ -93,36 +91,32 @@ interface IApollosRouter {
         uint256 sharesReceived
     );
 
-   
-
     /// @notice Thrown when a zero amount is provided for an operation.
     error ZeroAmount();
-    
+
     /// @notice Thrown when a zero address is provided for a critical parameter.
     error ZeroAddress();
-    
+
     /// @notice Thrown when a vault for the specified asset cannot be found.
     error VaultNotFound();
-    
+
     /// @notice Thrown when the caller has an insufficient token balance.
     error InsufficientBalance();
-    
+
     /// @notice Thrown when the shares or assets received are below the user's minimum tolerance.
     error SlippageExceeded();
-    
+
     /// @notice Thrown when the asset address provided is not supported by the protocol.
     error UnsupportedAsset();
-    
+
     /// @notice Thrown when an invalid CCIP chain selector is provided.
     error InvalidChainSelector();
-    
+
     /// @notice Thrown when the provided native token amount is insufficient to cover bridging fees.
     error InsufficientFee();
-    
+
     /// @notice Thrown when an unauthorized user attempts to perform a restricted admin action.
     error NotAuthorized();
-
-    
 
     /**
      * @notice Deposits an ERC20 asset into its corresponding vault.
@@ -140,8 +134,6 @@ interface IApollosRouter {
      */
     function depositETH(uint256 minShares) external payable returns (address vault, uint256 shares);
 
-    
-
     /**
      * @notice Withdraws assets from a specific vault by burning shares.
      * @param params Configuration for the withdrawal.
@@ -157,8 +149,6 @@ interface IApollosRouter {
      * @return amount The quantity of native ETH returned to the caller.
      */
     function withdrawETH(address vault, uint256 shares, uint256 minAmount) external returns (uint256 amount);
-
-    
 
     /**
      * @notice Initiates a bridge and deposit operation across chains.
@@ -178,8 +168,6 @@ interface IApollosRouter {
         external
         view
         returns (uint256 fee);
-
-    
 
     /**
      * @notice Returns the ApollosVault address associated with a specific asset.
@@ -215,8 +203,6 @@ interface IApollosRouter {
      * @notice Returns the address of the local Chainlink CCIP Router.
      */
     function ccipRouter() external view returns (address);
-
-    
 
     /**
      * @notice Updates the routing mapping for a specific asset.

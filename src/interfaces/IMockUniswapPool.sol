@@ -52,8 +52,6 @@ interface IMockUniswapPool {
         uint256 token1Deposited;
     }
 
-    
-
     /**
      * @notice Emitted when a new liquidity pool is initialized.
      */
@@ -91,48 +89,44 @@ interface IMockUniswapPool {
      */
     event WhitelistedVaultUpdated(address indexed vault, bool status);
 
-   
-
     /// @notice Thrown when attempting to initialize a pool that already exists.
     error PoolAlreadyExists();
-    
+
     /// @notice Thrown when an operation is performed on a non-existent pool.
     error PoolDoesNotExist();
-    
+
     /// @notice Thrown when a pool is currently deactivated.
     error PoolNotActive();
-    
+
     /// @notice Thrown when a withdrawal exceeds available pool or position liquidity.
     error InsufficientLiquidity();
-    
+
     /// @notice Thrown when the provided swap input is zero or insufficient.
     error InsufficientInputAmount();
-    
+
     /// @notice Thrown when a swap would result in zero output.
     error InsufficientOutputAmount();
-    
+
     /// @notice Thrown when an unsupported currency address is provided.
     error InvalidCurrency();
-    
+
     /// @notice Thrown when a zero amount is provided for a trade or liquidity action.
     error ZeroAmount();
-    
+
     /// @notice Thrown when a non-whitelisted address attempts to provide liquidity.
     error NotWhitelistedVault();
-    
+
     /// @notice Thrown when an operation would exceed the user's slippage tolerance.
     error SlippageExceeded();
-    
+
     /// @notice Thrown when an invalid fee value is provided.
     error InvalidFee();
-    
+
     /// @notice Thrown when currencies are provided in the wrong address order.
     error CurrenciesOutOfOrder();
-    
+
     /// @notice Thrown when an external V4 Hook callback fails.
     error HookCallFailed();
-
-    
 
     /**
      * @notice Initializes a new pool with V4 parameters.
@@ -150,8 +144,6 @@ interface IMockUniswapPool {
      * @notice Returns the current state of a pool by its key.
      */
     function getPoolStateByKey(PoolKey memory key) external view returns (PoolState memory state);
-
-   
 
     /**
      * @notice Adds liquidity to a pool.
@@ -189,8 +181,6 @@ interface IMockUniswapPool {
      */
     function getPosition(PoolId id, address provider) external view returns (LiquidityPosition memory position);
 
-    
-
     /**
      * @notice Executes a token swap, potentially triggering a V4 dynamic fee hook.
      * @param key The pool configuration.
@@ -211,8 +201,6 @@ interface IMockUniswapPool {
         view
         returns (uint256 amountOut, uint256 feeAmount);
 
-    
-
     /**
      * @notice Grants or revokes liquidity provision authority for a vault.
      */
@@ -222,8 +210,6 @@ interface IMockUniswapPool {
      * @notice Checks if a vault is authorized to provide liquidity.
      */
     function isWhitelistedVault(address vault) external view returns (bool isWhitelisted);
-
-    
 
     /**
      * @notice Returns the current spot price of token0 relative to token1.

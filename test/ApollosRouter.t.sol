@@ -91,12 +91,7 @@ contract ApollosRouterTest is Test {
         address vaultAddr = factory.createVault(params);
         vault = ApollosVault(vaultAddr);
 
-        router = new ApollosRouter(
-            address(factory),
-            address(weth),
-            address(0), 
-            address(usdc)
-        );
+        router = new ApollosRouter(address(factory), address(weth), address(0), address(usdc));
 
         uniswapPool.setWhitelistedVault(address(vault), true);
         lvrHook.setWhitelistedVault(address(vault), true);
@@ -311,7 +306,7 @@ contract ApollosRouterTest is Test {
      * @notice Verifies the ability to update supported cross-chain selectors.
      */
     function test_SetSupportedChain() public {
-        uint64 chainSelector = 16015286601757825753; 
+        uint64 chainSelector = 16015286601757825753;
 
         router.setSupportedChain(chainSelector, true);
 
@@ -345,7 +340,7 @@ contract ApollosRouterTest is Test {
         weth.approve(address(router), 10 ether);
 
         IApollosRouter.CrossChainDepositParams memory params = IApollosRouter.CrossChainDepositParams({
-            destinationChainSelector: 12345, 
+            destinationChainSelector: 12345,
             destinationRouter: address(0),
             asset: address(weth),
             amount: 10 ether,

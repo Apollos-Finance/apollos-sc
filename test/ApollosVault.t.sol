@@ -45,7 +45,7 @@ contract ApollosVaultTest is Test {
 
     uint256 constant INITIAL_WETH = 100 ether;
     uint256 constant INITIAL_USDC = 200_000 * 1e6;
-    uint256 constant ETH_PRICE = 2000 * 1e8; 
+    uint256 constant ETH_PRICE = 2000 * 1e8;
     bytes32 constant WETH_NAV = keccak256("WETH_NAV");
 
     /**
@@ -230,7 +230,7 @@ contract ApollosVaultTest is Test {
      */
     function test_Deposit_SlippageProtection() public {
         uint256 depositAmount = 10 ether;
-        uint256 minShares = type(uint256).max; 
+        uint256 minShares = type(uint256).max;
 
         vm.startPrank(alice);
         weth.approve(address(vault), depositAmount);
@@ -271,7 +271,7 @@ contract ApollosVaultTest is Test {
         vm.startPrank(alice);
 
         vm.expectRevert(IApollosVault.InsufficientShares.selector);
-        vault.withdraw(1 ether, 0); 
+        vault.withdraw(1 ether, 0);
 
         vm.stopPrank();
     }

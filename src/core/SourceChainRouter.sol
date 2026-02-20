@@ -14,7 +14,7 @@ import {Client} from "@chainlink/contracts-ccip/src/v0.8/ccip/libraries/Client.s
  * @notice Lightweight bridge-only router for Apollos source chains (Base).
  * @author Apollos Team
  * @dev This contract handles the initiation of cross-chain deposit messages via Chainlink CCIP.
- *      It does not manage local vaults or WETH wrapping, serving purely as a gateway to 
+ *      It does not manage local vaults or WETH wrapping, serving purely as a gateway to
  *      the Arbitrum deployment.
  */
 contract SourceChainRouter is Ownable, ReentrancyGuard {
@@ -31,8 +31,6 @@ contract SourceChainRouter is Ownable, ReentrancyGuard {
 
     /// @notice Maps asset addresses to their support status for bridging.
     mapping(address => bool) public supportedAssets;
-
-    
 
     /**
      * @notice Emitted when a cross-chain bridge and deposit process is successfully initiated.
@@ -52,35 +50,31 @@ contract SourceChainRouter is Ownable, ReentrancyGuard {
      * @notice Emitted when the target receiver address is updated.
      */
     event DestinationReceiverUpdated(address indexed oldReceiver, address indexed newReceiver);
-    
+
     /**
      * @notice Emitted when a destination chain's support status is modified.
      */
     event SupportedChainUpdated(uint64 indexed chainSelector, bool supported);
-    
+
     /**
      * @notice Emitted when an asset's bridge support status is modified.
      */
     event SupportedAssetUpdated(address indexed asset, bool supported);
 
-    
-
     /// @notice Thrown when a zero address is provided for a critical role or parameter.
     error ZeroAddress();
-    
+
     /// @notice Thrown when an operation is attempted with zero amount.
     error ZeroAmount();
-    
+
     /// @notice Thrown when an unsupported target chain is selected.
     error InvalidChainSelector();
-    
+
     /// @notice Thrown when an unsupported asset is provided for bridging.
     error UnsupportedAsset();
-    
+
     /// @notice Thrown when the provided native token amount does not cover CCIP fees.
     error InsufficientFee(uint256 required, uint256 provided);
-
-    
 
     /**
      * @notice Initializes the SourceChainRouter.
@@ -90,7 +84,7 @@ contract SourceChainRouter is Ownable, ReentrancyGuard {
         if (_ccipRouter == address(0)) revert ZeroAddress();
         ccipRouter = _ccipRouter;
     }
-    
+
     /**
      * @notice Bridges assets to Arbitrum and initiates a vault deposit.
      * @dev Encodes vault routing instructions into the CCIP message payload.
@@ -122,14 +116,7 @@ contract SourceChainRouter is Ownable, ReentrancyGuard {
         IERC20(asset).safeIncreaseAllowance(ccipRouter, amount);
 
         // Encode cross-chain payload
-        bytes memory depositData = abi.encode(
-            asset, 
-            amount,
-            minShares,
-            receiver,
-            msg.sender,
-            targetBaseAsset
-        );
+        bytes memory depositData = abi.encode(asset, amount, minShares, receiver, msg.sender, targetBaseAsset);
 
         // Build CCIP message
         Client.EVMTokenAmount[] memory tokenAmounts = new Client.EVMTokenAmount[](1);
@@ -161,8 +148,6 @@ contract SourceChainRouter is Ownable, ReentrancyGuard {
         );
     }
 
-    
-
     /**
      * @notice Estimates the CCIP fee required for a specific bridging operation.
      */
@@ -179,14 +164,7 @@ contract SourceChainRouter is Ownable, ReentrancyGuard {
         Client.EVMTokenAmount[] memory tokenAmounts = new Client.EVMTokenAmount[](1);
         tokenAmounts[0] = Client.EVMTokenAmount({token: asset, amount: amount});
 
-        bytes memory depositData = abi.encode(
-            asset,
-            amount,
-            minShares,
-            msg.sender,
-            msg.sender,
-            targetBaseAsset
-        );
+        bytes memory depositData = abi.encode(asset, amount, minShares, msg.sender, msg.sender, targetBaseAsset);
 
         Client.EVM2AnyMessage memory message = Client.EVM2AnyMessage({
             receiver: abi.encode(destinationReceiver),
@@ -198,8 +176,6 @@ contract SourceChainRouter is Ownable, ReentrancyGuard {
 
         return IRouterClient(ccipRouter).getFee(destinationChain, message);
     }
-
-    
 
     /**
      * @notice Updates the destination CCIPReceiver address.

@@ -23,7 +23,7 @@ import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
  * @notice Destination chain receiver for Apollos cross-chain deposits.
  * @author Apollos Finance Team
  * @dev Implements the Store-and-Execute pattern to handle complex DeFi operations triggered via Chainlink CCIP.
- *      The contract stores the incoming deposit intent and allows a secondary transaction to execute the heavy 
+ *      The contract stores the incoming deposit intent and allows a secondary transaction to execute the heavy
  *      logic (swapping and vault depositing) to bypass CCIP gas limits.
  */
 contract ApollosCCIPReceiver is IApollosCCIPReceiver, CCIPReceiver, Ownable, ReentrancyGuard {
@@ -84,30 +84,27 @@ contract ApollosCCIPReceiver is IApollosCCIPReceiver, CCIPReceiver, Ownable, Ree
     /// @notice Access point for all stored pending deposits by their message ID.
     mapping(bytes32 => PendingDeposit) public pendingDeposits;
 
-   
-
     /**
      * @notice Emitted when a CCIP message is received and its intent is stored.
      */
     event DepositStored(
         bytes32 indexed messageId, uint64 indexed sourceChainSelector, address indexed receiver, uint256 amount
     );
-    
+
     /**
      * @notice Emitted when a stored zap is successfully executed.
      */
     event ZapExecuted(bytes32 indexed messageId, address indexed vault, uint256 shares);
-    
+
     /**
      * @notice Emitted when a zap execution fails (captured within try/catch blocks).
      */
     event ZapFailed(bytes32 indexed messageId, string reason);
-    
+
     /**
      * @notice Emitted when the contract's reserve balance is too low to facilitate a swap.
      */
     event ReserveInsufficient(uint256 required, uint256 available);
-
 
     /**
      * @notice Initializes the ApollosCCIPReceiver.
@@ -130,7 +127,6 @@ contract ApollosCCIPReceiver is IApollosCCIPReceiver, CCIPReceiver, Ownable, Ree
             swapPool = IMockUniswapPool(_swapPool);
         }
     }
-
 
     /**
      * @notice Internal handler called by the CCIP Router when a message is delivered.
@@ -168,7 +164,6 @@ contract ApollosCCIPReceiver is IApollosCCIPReceiver, CCIPReceiver, Ownable, Ree
 
         emit DepositStored(message.messageId, message.sourceChainSelector, receiver, amount);
     }
-
 
     /**
      * @notice Executes a previously stored cross-chain deposit intent.
@@ -225,8 +220,6 @@ contract ApollosCCIPReceiver is IApollosCCIPReceiver, CCIPReceiver, Ownable, Ree
             deposit.sourceChainSelector
         );
     }
-
-    
 
     /**
      * @dev Internal helper to perform a token swap via the MockUniswapPool.
@@ -295,8 +288,6 @@ contract ApollosCCIPReceiver is IApollosCCIPReceiver, CCIPReceiver, Ownable, Ree
         }
         return apollosFactory.getVault(asset, quoteAsset);
     }
-
-    
 
     /**
      * @notice Authorizes a source chain and sender for incoming messages.
@@ -370,8 +361,6 @@ contract ApollosCCIPReceiver is IApollosCCIPReceiver, CCIPReceiver, Ownable, Ree
     function rescueTokens(address token, uint256 amount) external override onlyOwner {
         IERC20(token).safeTransfer(owner(), amount);
     }
-
-    
 
     /**
      * @notice Checks if a source is authorized.

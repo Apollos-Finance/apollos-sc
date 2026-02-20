@@ -85,7 +85,7 @@ contract MockTokenTest is Test {
     function test_FaucetMaxAmount() public {
         vm.prank(alice);
         vm.expectRevert();
-        weth.faucet(10001); 
+        weth.faucet(10001);
     }
 
     /**
@@ -93,7 +93,7 @@ contract MockTokenTest is Test {
      */
     function test_FaucetRawSupportsFractionalAmount() public {
         vm.prank(alice);
-        weth.faucetRaw(1e16); 
+        weth.faucetRaw(1e16);
 
         assertEq(weth.balanceOf(alice), 1e16);
     }
@@ -104,7 +104,7 @@ contract MockTokenTest is Test {
     function test_FaucetRawMaxAmount() public {
         vm.prank(alice);
         vm.expectRevert();
-        weth.faucetRaw(10001 ether); 
+        weth.faucetRaw(10001 ether);
     }
 
     /**

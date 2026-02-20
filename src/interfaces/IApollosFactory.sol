@@ -48,8 +48,6 @@ interface IApollosFactory {
         uint256 createdAt;
     }
 
-    
-
     /**
      * @notice Emitted when a new ApollosVault is deployed and registered.
      */
@@ -66,43 +64,39 @@ interface IApollosFactory {
      * @notice Emitted when a vault is deactivated.
      */
     event VaultDeactivated(address indexed vault);
-    
+
     /**
      * @notice Emitted when a previously deactivated vault is reactivated.
      */
     event VaultReactivated(address indexed vault);
-    
+
     /**
      * @notice Emitted when the global protocol fee is updated.
      */
     event ProtocolFeeUpdated(uint256 oldFee, uint256 newFee);
-    
+
     /**
      * @notice Emitted when the protocol treasury address is updated.
      */
     event TreasuryUpdated(address indexed oldTreasury, address indexed newTreasury);
 
-    
-
     /// @notice Thrown when attempting to create a vault for a pair that already exists.
     error VaultAlreadyExists();
-    
+
     /// @notice Thrown when looking up a vault address that is not in the registry.
     error VaultNotFound();
-    
+
     /// @notice Thrown when an invalid asset address is provided.
     error InvalidAsset();
-    
+
     /// @notice Thrown when provided vault parameters are inconsistent or out of bounds.
     error InvalidParameters();
-    
+
     /// @notice Thrown when a zero address is provided.
     error ZeroAddress();
-    
+
     /// @notice Thrown when an unauthorized user attempts to call a restricted function.
     error Unauthorized();
-
-    
 
     /**
      * @notice Deploys a new ApollosVault instance and registers it in the system.
@@ -122,8 +116,6 @@ interface IApollosFactory {
      * @param vault The address of the vault to reactivate.
      */
     function reactivateVault(address vault) external;
-
-    
 
     /**
      * @notice Returns the vault address for a specific asset pair.
@@ -182,8 +174,6 @@ interface IApollosFactory {
      * @notice Returns the address of the LVR Hook shared by all vaults.
      */
     function lvrHook() external view returns (address);
-
-    
 
     /**
      * @notice Updates the protocol-level fee.

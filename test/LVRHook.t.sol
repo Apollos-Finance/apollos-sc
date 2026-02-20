@@ -77,7 +77,7 @@ contract LVRHookTest is Test {
      */
     function test_SetDynamicFeeByOwner() public {
         vm.prank(owner);
-        lvrHook.setDynamicFee(poolId, 50000); 
+        lvrHook.setDynamicFee(poolId, 50000);
 
         assertEq(lvrHook.getDynamicFee(poolId), 50000);
     }
@@ -87,7 +87,7 @@ contract LVRHookTest is Test {
      */
     function test_SetDynamicFeeByWorkflow() public {
         vm.prank(workflow);
-        lvrHook.setDynamicFee(poolId, 100000); 
+        lvrHook.setDynamicFee(poolId, 100000);
 
         assertEq(lvrHook.getDynamicFee(poolId), 100000);
     }
@@ -107,7 +107,7 @@ contract LVRHookTest is Test {
     function test_SetDynamicFeeExceedsMaxReverts() public {
         vm.prank(owner);
         vm.expectRevert(LVRHook.InvalidFee.selector);
-        lvrHook.setDynamicFee(poolId, 600000); 
+        lvrHook.setDynamicFee(poolId, 600000);
     }
 
     /**
@@ -164,7 +164,7 @@ contract LVRHookTest is Test {
 
         vm.prank(workflow);
         lvrHook.resetFee(poolId);
-        assertEq(lvrHook.getDynamicFee(poolId), 500); 
+        assertEq(lvrHook.getDynamicFee(poolId), 500);
     }
 
     /**
@@ -172,7 +172,7 @@ contract LVRHookTest is Test {
      */
     function test_BeforeSwapReturnsDynamicFee() public {
         vm.prank(owner);
-        lvrHook.setDynamicFee(poolId, 100000); 
+        lvrHook.setDynamicFee(poolId, 100000);
 
         IPoolManager.SwapParams memory params =
             IPoolManager.SwapParams({zeroForOne: true, amountSpecified: -1e18, sqrtPriceLimitX96: 0});
@@ -195,7 +195,7 @@ contract LVRHookTest is Test {
         (,, uint24 fee) = lvrHook.beforeSwap(address(this), poolKey, params, "");
 
         uint24 rawFee = fee & 0x7FFFFF;
-        assertEq(rawFee, 500); 
+        assertEq(rawFee, 500);
     }
 
     /**
@@ -279,6 +279,6 @@ contract LVRHookTest is Test {
 
         assertEq(fee, 50000);
         assertEq(lastUpdate, block.timestamp);
-        assertTrue(isHighVolatility); 
+        assertTrue(isHighVolatility);
     }
 }

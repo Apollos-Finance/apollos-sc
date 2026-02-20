@@ -43,7 +43,6 @@ contract ApollosRouter is IApollosRouter, Ownable, ReentrancyGuard {
     /// @notice The address of the Chainlink CCIP Router on this chain.
     address public immutable ccipRouterAddress;
 
-
     /// @notice Direct mapping for faster routing: asset => vault.
     mapping(address => address) public assetToVault;
 
@@ -55,7 +54,6 @@ contract ApollosRouter is IApollosRouter, Ownable, ReentrancyGuard {
 
     /// @notice The global quote asset (stable) used by the protocol.
     address public quoteAsset;
-
 
     /**
      * @notice Initializes the ApollosRouter with mandatory infrastructure addresses.
@@ -77,8 +75,6 @@ contract ApollosRouter is IApollosRouter, Ownable, ReentrancyGuard {
      * @notice Fallback function to receive native ETH.
      */
     receive() external payable {}
-
-    
 
     /**
      * @notice Deposits an ERC20 asset into the appropriate vault.
@@ -139,7 +135,6 @@ contract ApollosRouter is IApollosRouter, Ownable, ReentrancyGuard {
 
         emit Deposit(msg.sender, vault, address(wethContract), msg.value, shares);
     }
-
 
     /**
      * @notice Withdraws base assets from a specific vault by burning shares.
@@ -204,7 +199,6 @@ contract ApollosRouter is IApollosRouter, Ownable, ReentrancyGuard {
         emit Withdraw(msg.sender, vault, shares, amount);
     }
 
-
     /**
      * @notice Initiates a cross-chain bridge and deposit operation via Chainlink CCIP.
      * @dev Transfers tokens to this contract, approves CCIP Router, and sends the message.
@@ -229,12 +223,7 @@ contract ApollosRouter is IApollosRouter, Ownable, ReentrancyGuard {
 
         // Encode cross-chain payload (for CCIPReceiver decoding)
         bytes memory depositData = abi.encode(
-            params.asset, 
-            params.amount,
-            params.minShares,
-            params.receiver,
-            msg.sender,
-            params.targetBaseAsset
+            params.asset, params.amount, params.minShares, params.receiver, msg.sender, params.targetBaseAsset
         );
 
         // Build CCIP message
@@ -293,8 +282,6 @@ contract ApollosRouter is IApollosRouter, Ownable, ReentrancyGuard {
 
         fee = IRouterClient(ccipRouterAddress).getFee(destinationChainSelector, message);
     }
-
-    
 
     /**
      * @notice Returns the vault address mapped to a specific asset.
@@ -363,8 +350,6 @@ contract ApollosRouter is IApollosRouter, Ownable, ReentrancyGuard {
     function ccipRouter() external view override returns (address) {
         return ccipRouterAddress;
     }
-
-    
 
     /**
      * @notice Updates the routing table for a specific asset.

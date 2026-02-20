@@ -21,7 +21,7 @@ import {IDataFeedsCache} from "../interfaces/IDataFeedsCache.sol";
  * @title ApollosVault
  * @notice ERC4626 Leveraged Yield Vault with Hybrid NAV system.
  * @author Apollos Team
- * @dev This vault employs a 2x leverage strategy by borrowing quote assets from Aave 
+ * @dev This vault employs a 2x leverage strategy by borrowing quote assets from Aave
  *      and providing liquidity to Uniswap V4. It uses a "Hybrid NAV" system:
  *      - Priority Path: Off-chain computed NAV from Chainlink Workflows + Real-time Flow Deltas.
  *      - Fallback Path: Real-time on-chain math valuation (used when feed is stale).
@@ -29,33 +29,31 @@ import {IDataFeedsCache} from "../interfaces/IDataFeedsCache.sol";
 contract ApollosVault is IApollosVault, ERC4626, Ownable, ReentrancyGuard {
     using SafeERC20 for IERC20;
     using PoolIdLibrary for PoolKey;
-    
+
     /// @notice Precision multiplier for internal math (18 decimals).
     uint256 public constant PRECISION = 1e18;
-    
+
     /// @notice Basis points denominator (100% = 10000).
     uint256 public constant BPS = 10000;
-    
+
     /// @notice Safety cap for the idle withdrawal buffer (30%).
     uint256 public constant MAX_IDLE_BUFFER_BPS = 3000;
 
-
     /// @notice The stable asset borrowed to create leverage (e.g., USDC).
     IERC20 public immutable quoteAsset;
-    
+
     /// @notice The simulated Aave V3 Pool used for borrowing.
     IMockAavePool public immutable aavePool;
-    
+
     /// @notice The simulated Uniswap V4 Pool used for yield.
     IMockUniswapPool public immutable uniswapPool;
-    
+
     /// @notice The V4 PoolKey for this vault's liquidity pair.
     PoolKey public poolKey;
 
-
     /// @notice Current leverage strategy configuration.
     VaultConfig public config;
-    
+
     /// @notice Pause status of the vault.
     bool public paused;
 
@@ -64,60 +62,56 @@ contract ApollosVault is IApollosVault, ERC4626, Ownable, ReentrancyGuard {
 
     /// @notice Current LP token balance held by the vault.
     uint256 public lpTokenBalance;
-    
+
     /// @notice Protocol fee in basis points.
     uint256 public protocolFee;
-    
+
     /// @notice Address where collected fees are sent.
     address public treasury;
-    
+
     /// @notice Amount of collected but unwithdrawn protocol fees.
     uint256 public pendingFees;
-    
+
     /// @notice Minimum deposit amount to prevent rounding attacks and dust.
     uint256 public MIN_DEPOSIT;
 
     /// @notice Shared data feed cache for off-chain NAV updates.
     IDataFeedsCache public dataFeedsCache;
-    
+
     /// @notice Unique identifier for this vault's NAV feed in the cache.
     bytes32 public navDataId;
-    
+
     /// @notice Maximum allowed time (in seconds) before the NAV feed is considered stale.
     uint256 public maxOracleAge;
-    
+
     /// @notice Target percentage of assets kept idle for fast withdrawals.
     uint256 public idleBufferBps;
-    
+
     /// @notice Cumulative flow delta (deposits - withdrawals) since the last oracle update.
     int256 public netFlowSinceLastUpdate;
-    
+
     /// @notice Timestamp of the last processed oracle checkpoint.
     uint256 public lastOracleUpdatedAt;
-
-    
 
     /**
      * @notice Emitted when the data feed configuration is updated.
      */
     event DataFeedConfigUpdated(address indexed cache, bytes32 indexed dataId, uint256 maxOracleAge);
-    
+
     /**
      * @notice Emitted when a keeper's authorization status is updated.
      */
     event KeeperUpdated(address indexed keeper, bool authorized);
-    
+
     /**
      * @notice Emitted when the idle buffer target is changed.
      */
     event IdleBufferUpdated(uint256 oldBps, uint256 newBps);
-    
+
     /**
      * @notice Emitted when the net flow delta is reset during an oracle synchronization.
      */
     event NetFlowReset(uint256 oracleUpdatedAt);
-
-    
 
     /// @notice Thrown when an outdated NAV update method is called.
     error DeprecatedNAVUpdate();
@@ -135,7 +129,6 @@ contract ApollosVault is IApollosVault, ERC4626, Ownable, ReentrancyGuard {
         }
         _;
     }
-
 
     /**
      * @notice Initializes the ApollosVault.
@@ -188,8 +181,6 @@ contract ApollosVault is IApollosVault, ERC4626, Ownable, ReentrancyGuard {
         }
     }
 
-    
-
     /**
      * @notice Syncs the oracle checkpoint and resets net flow delta.
      * @dev Called by Chainlink Workflows or manual operators to finalize an NAV update cycle.
@@ -226,8 +217,6 @@ contract ApollosVault is IApollosVault, ERC4626, Ownable, ReentrancyGuard {
         // Fallback source when feed is stale/missing/invalid.
         return _getRealtimeNavFromOnchain();
     }
-
-    
 
     /**
      * @notice Standard ERC4626 deposit function.
@@ -417,8 +406,6 @@ contract ApollosVault is IApollosVault, ERC4626, Ownable, ReentrancyGuard {
         emit EmergencyWithdraw(msg.sender, shares, amount);
     }
 
-    
-
     /**
      * @notice Returns the current leverage configuration.
      */
@@ -488,8 +475,6 @@ contract ApollosVault is IApollosVault, ERC4626, Ownable, ReentrancyGuard {
         return hf < config.rebalanceThreshold && hf != type(uint256).max;
     }
 
-    
-
     /**
      * @notice Returns the number of decimals for vault shares.
      */
@@ -517,8 +502,6 @@ contract ApollosVault is IApollosVault, ERC4626, Ownable, ReentrancyGuard {
     function withdraw(uint256, address, address) public pure override(ERC4626) returns (uint256) {
         revert("Use withdraw(shares, minAmount)");
     }
-
-    
 
     /**
      * @notice Updates the strategy configuration.
@@ -604,8 +587,6 @@ contract ApollosVault is IApollosVault, ERC4626, Ownable, ReentrancyGuard {
     function setProtocolFee(uint256 _fee) external onlyOwner {
         protocolFee = _fee;
     }
-
-    
 
     /**
      * @dev Calculates the amount of quote asset to borrow based on the target leverage.
@@ -711,7 +692,7 @@ contract ApollosVault is IApollosVault, ERC4626, Ownable, ReentrancyGuard {
         uint256 lpValueInBase = _getLPValueInBase();
         uint256 debtInBase = _convertQuoteToBase(totalDebt);
         uint256 strategyNetInBase = lpValueInBase > debtInBase ? (lpValueInBase - debtInBase) : 0;
-                
+
         return idleBase + idleQuoteInBase + strategyNetInBase;
     }
 

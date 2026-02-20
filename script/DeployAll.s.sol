@@ -145,12 +145,7 @@ contract DeployAll is Script {
     function _deployFactory() internal {
         console.log("--- Step 3: Deploy Factory ---");
 
-        factory = new ApollosFactory(
-            address(aavePool),
-            address(uniswapPool),
-            address(lvrHook),
-            msg.sender
-        );
+        factory = new ApollosFactory(address(aavePool), address(uniswapPool), address(lvrHook), msg.sender);
         console.log("ApollosFactory:", address(factory));
         console.log("");
     }
@@ -231,12 +226,7 @@ contract DeployAll is Script {
     function _deployRouter() internal {
         console.log("--- Step 5: Deploy Router ---");
 
-        router = new ApollosRouter(
-            address(factory),
-            address(weth),
-            CCIP_ROUTER_ARB_SEPOLIA,
-            address(usdc)
-        );
+        router = new ApollosRouter(address(factory), address(weth), CCIP_ROUTER_ARB_SEPOLIA, address(usdc));
         console.log("ApollosRouter:", address(router));
 
         router.setAssetVault(address(weth), wethVault);
@@ -256,11 +246,7 @@ contract DeployAll is Script {
         console.log("--- Step 6: Deploy CCIPReceiver ---");
 
         ccipReceiver = new ApollosCCIPReceiver(
-            CCIP_ROUTER_ARB_SEPOLIA,
-            address(factory),
-            address(0),
-            address(usdc),
-            address(uniswapPool)
+            CCIP_ROUTER_ARB_SEPOLIA, address(factory), address(0), address(usdc), address(uniswapPool)
         );
         console.log("ApollosCCIPReceiver:", address(ccipReceiver));
 
@@ -272,10 +258,7 @@ contract DeployAll is Script {
         ccipReceiver.setAssetVault(address(weth), wethVault);
         ccipReceiver.setAssetVault(address(wbtc), wbtcVault);
         ccipReceiver.setAssetVault(address(link), linkVault);
-        ccipReceiver.setAssetMapping(
-            CCIP_BNM_BASE_SEPOLIA,
-            CCIP_BNM_ARB_SEPOLIA
-        );
+        ccipReceiver.setAssetMapping(CCIP_BNM_BASE_SEPOLIA, CCIP_BNM_ARB_SEPOLIA);
         console.log("CCIPReceiver: asset-vault mappings set");
 
         ccipReceiver.setSwapConfig(address(weth), wethPoolKey);

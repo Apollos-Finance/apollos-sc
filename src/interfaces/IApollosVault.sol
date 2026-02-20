@@ -46,8 +46,6 @@ interface IApollosVault {
         uint256 currentLeverage;
     }
 
-    
-
     /**
      * @notice Emitted when a user successfully deposits assets and receives shares.
      */
@@ -73,51 +71,47 @@ interface IApollosVault {
      */
     event HarvestFees(uint256 tradingFees, uint256 protocolFee, uint256 timestamp);
 
-    
-
     /// @notice Thrown when a zero amount is provided for a financial operation.
     error ZeroAmount();
-    
+
     /// @notice Thrown when a zero address is provided for a mandatory parameter.
     error ZeroAddress();
-    
+
     /// @notice Thrown when a user attempts to burn more shares than they own.
     error InsufficientShares();
-    
+
     /// @notice Thrown when the vault lacks sufficient liquidity to fulfill an operation.
     error InsufficientBalance();
-    
+
     /// @notice Thrown when a vault action would result in a health factor below the safety limit.
     error HealthFactorTooLow();
-    
+
     /// @notice Thrown when an operation would exceed the protocol's maximum allowed leverage.
     error ExceedsMaxLeverage();
-    
+
     /// @notice Thrown when an unauthorized account attempts to call a restricted function.
     error NotAuthorized();
-    
+
     /// @notice Thrown when an operation is attempted while the vault is paused.
     error VaultPaused();
-    
+
     /// @notice Thrown when the received value is below the user's defined tolerance.
     error SlippageExceeded();
-    
+
     /// @notice Thrown when a rebalance is triggered but the current state does not warrant one.
     error RebalanceNotNeeded();
-    
+
     /// @notice Thrown when the vault's idle cash is insufficient for immediate operations.
     error InsufficientIdleLiquidity();
-    
+
     /// @notice Thrown when the NAV feed from the off-chain workflow is older than the allowed tolerance.
     error StaleNAVFeed();
-    
+
     /// @notice Thrown when the vault's total liabilities exceed its total assets.
     error InsolventVault();
-    
+
     /// @notice Thrown when the oracle configuration is incomplete or invalid.
     error InvalidOracleConfig();
-
-    
 
     /**
      * @notice Standard ERC4626 deposit function.
@@ -158,8 +152,6 @@ interface IApollosVault {
      * @dev Skips normal rebalancing and deleveraging logic to prioritize capital preservation.
      */
     function emergencyWithdraw(uint256 shares) external returns (uint256 amount);
-
-    
 
     /**
      * @notice Returns the current leverage configuration of the vault.
@@ -218,8 +210,6 @@ interface IApollosVault {
      * @notice Returns the total quantity of afTokens currently in circulation.
      */
     function totalSupply() external view returns (uint256);
-
-    
 
     /**
      * @notice Updates the strategy configuration parameters.

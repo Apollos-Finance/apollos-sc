@@ -12,7 +12,7 @@ import {ApollosVault} from "./ApollosVault.sol";
  * @notice Factory and Registry for creating and managing ApollosVault instances.
  * @author Apollos Team
  * @dev This contract acts as the central hub for the protocol, managing vault deployment,
- *      active vault registration, and global configuration parameters like protocol fees 
+ *      active vault registration, and global configuration parameters like protocol fees
  *      and shared pool manager addresses.
  */
 contract ApollosFactory is IApollosFactory, Ownable {
@@ -40,7 +40,6 @@ contract ApollosFactory is IApollosFactory, Ownable {
     /// @dev Internal mapping to store metadata for each deployed vault.
     mapping(address => VaultInfo) private vaultInfos;
 
-
     /**
      * @notice Initializes the ApollosFactory with shared infrastructure addresses.
      * @param _aavePool The address of the MockAavePool.
@@ -59,8 +58,6 @@ contract ApollosFactory is IApollosFactory, Ownable {
         treasury = _treasury;
         protocolFee = 100; // 1% default
     }
-
-    
 
     /**
      * @notice Deploys and registers a new ApollosVault for a specific asset pair.
@@ -133,8 +130,6 @@ contract ApollosFactory is IApollosFactory, Ownable {
         emit VaultReactivated(vault);
     }
 
-    
-
     /**
      * @notice Returns the vault address for a specific asset pair.
      */
@@ -169,8 +164,6 @@ contract ApollosFactory is IApollosFactory, Ownable {
     function vaultCount() external view override returns (uint256) {
         return allVaults.length;
     }
-
-    
 
     /**
      * @notice Updates the protocol fee.

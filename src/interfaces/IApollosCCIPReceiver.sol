@@ -63,27 +63,23 @@ interface IApollosCCIPReceiver {
      */
     event SwapExecuted(address indexed fromToken, address indexed toToken, uint256 amountIn, uint256 amountOut);
 
-    
-
     /// @notice Thrown when receiving a message from an unauthorized chain.
     error InvalidSourceChain();
-    
+
     /// @notice Thrown when receiving a message from an unauthorized sender.
     error InvalidSender();
-    
+
     /// @notice Thrown when the provided asset is not supported.
     error InvalidAsset();
-    
+
     /// @notice Thrown when the vault deposit fails.
     error DepositFailed();
-    
+
     /// @notice Thrown when the internal token swap fails.
     error SwapFailed();
-    
+
     /// @notice Thrown when a zero address is provided where a valid address is required.
     error ZeroAddress();
-
-   
 
     /**
      * @notice Configures authorized source chains and senders for CCIP messages.
@@ -120,8 +116,6 @@ interface IApollosCCIPReceiver {
      * @param amount The amount of tokens to transfer to the owner.
      */
     function rescueTokens(address token, uint256 amount) external;
-
-    
 
     /**
      * @notice Checks if a specific source chain and sender are authorized.

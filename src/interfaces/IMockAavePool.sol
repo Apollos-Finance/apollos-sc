@@ -45,8 +45,6 @@ interface IMockAavePool {
         uint256 variableBorrowIndex;
     }
 
-    
-
     /**
      * @notice Emitted when assets are supplied to the pool.
      */
@@ -91,42 +89,38 @@ interface IMockAavePool {
      */
     event ReserveConfigured(address indexed asset, uint256 ltv, uint256 liquidationThreshold, uint256 liquidationBonus);
 
-    
-
     /// @notice Thrown when a zero or invalid amount is provided.
     error InvalidAmount();
-    
+
     /// @notice Thrown when an operation is attempted on an inactive reserve.
     error ReserveNotActive();
-    
+
     /// @notice Thrown when a borrow or withdraw action would breach collateral requirements.
     error InsufficientCollateral();
-    
+
     /// @notice Thrown when an operation would drop the health factor below the safety threshold.
     error HealthFactorTooLow();
-    
+
     /// @notice Thrown when trying to repay debt for a user with no active borrows.
     error NothingToRepay();
-    
+
     /// @notice Thrown when trying to withdraw from an empty collateral balance.
     error NothingToWithdraw();
-    
+
     /// @notice Thrown when attempting to liquidate a user with a healthy health factor.
     error NotLiquidatable();
-    
+
     /// @notice Thrown when a non-whitelisted address tries to access credit delegation.
     error NotWhitelistedBorrower();
-    
+
     /// @notice Thrown when a delegator tries to delegate more credit than they have supplied as collateral.
     error DelegationExceedsSuppliedBalance();
-    
+
     /// @notice Thrown when a delegator tries to reduce delegation below the borrower's active debt.
     error DelegationBelowOutstandingDebt();
-    
+
     /// @notice Thrown when a zero address is provided.
     error ZeroAddress();
-
-    
 
     /**
      * @notice Supplies assets to be used as collateral.
@@ -180,8 +174,6 @@ interface IMockAavePool {
         bool receiveAToken
     ) external;
 
-    
-
     /**
      * @notice Returns comprehensive risk and positioning data for a specific user.
      */
@@ -212,8 +204,6 @@ interface IMockAavePool {
      */
     function getUserDebt(address user, address asset) external view returns (uint256);
 
-   
-
     /**
      * @notice Sets the risk parameters for an asset.
      */
@@ -230,8 +220,6 @@ interface IMockAavePool {
      * @notice Returns the current simulated price of an asset.
      */
     function assetPrices(address asset) external view returns (uint256 priceInUsd);
-
-
 
     /**
      * @notice Whitelists a borrower to access undercollateralized borrowing via delegation.

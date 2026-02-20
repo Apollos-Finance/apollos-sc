@@ -19,13 +19,13 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 contract MockToken is ERC20, ERC20Burnable, Ownable {
     /// @dev Internal storage for custom decimal count
     uint8 private _decimals;
-    
+
     /// @notice Indicates if this token contract supports WETH-style deposit/withdraw
     bool public immutable isWETH;
 
     /// @notice Time interval required between faucet claims (24 hours)
     uint256 public constant FAUCET_COOLDOWN = 1 days;
-    
+
     /// @notice Maximum amount of tokens a user can claim from the faucet per interval
     uint256 public constant MAX_FAUCET_AMOUNT = 10000;
 
@@ -34,27 +34,27 @@ contract MockToken is ERC20, ERC20Burnable, Ownable {
 
     /// @notice Emitted when a user claims tokens from the faucet
     event FaucetClaimed(address indexed user, uint256 amount);
-    
+
     /// @notice Emitted when tokens are minted via owner or public minting
     event TokensMinted(address indexed to, uint256 amount);
-    
+
     /// @notice Emitted when tokens are burned
     event TokensBurned(address indexed from, uint256 amount);
 
     /// @notice Error thrown when trying to claim from faucet before cooldown expires
     error FaucetCooldownActive(uint256 remainingTime);
-    
+
     /// @notice Error thrown when requested faucet amount exceeds the defined limit
     error FaucetAmountExceeded(uint256 requested, uint256 maximum);
-    
+
     /// @notice Error thrown when a zero address is provided as an argument
     error ZeroAddress();
-    
+
     /// @notice Error thrown when a zero amount is provided as an argument
     error ZeroAmount();
-    
+
     /// @notice Error thrown when calling WETH functions on a non-WETH token
-    error NotWETH(); 
+    error NotWETH();
 
     /**
      * @notice Initializes the mock token with name, symbol, and configuration

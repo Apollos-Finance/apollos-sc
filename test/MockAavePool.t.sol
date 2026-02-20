@@ -23,8 +23,8 @@ contract MockAavePoolTest is Test {
     address public investor = makeAddr("investor");
     address public liquidator = makeAddr("liquidator");
 
-    uint256 constant WETH_PRICE = 2000 * 1e8; 
-    uint256 constant USDC_PRICE = 1 * 1e8; 
+    uint256 constant WETH_PRICE = 2000 * 1e8;
+    uint256 constant USDC_PRICE = 1 * 1e8;
 
     /**
      * @notice Sets up the test environment by deploying tokens and the Aave pool mock.
@@ -118,7 +118,7 @@ contract MockAavePoolTest is Test {
         weth.approve(address(aavePool), 10 ether);
         aavePool.supply(address(weth), 10 ether, vault, 0);
 
-        uint256 tooMuch = 16_000 * 1e6; 
+        uint256 tooMuch = 16_000 * 1e6;
 
         vm.expectRevert(IMockAavePool.InsufficientCollateral.selector);
         aavePool.borrow(address(usdc), tooMuch, 2, 0, vault);
@@ -310,11 +310,11 @@ contract MockAavePoolTest is Test {
         vm.startPrank(vault);
         weth.approve(address(aavePool), 10 ether);
         aavePool.supply(address(weth), 10 ether, vault, 0);
-        aavePool.borrow(address(usdc), 12_000 * 1e6, 2, 0, vault); 
+        aavePool.borrow(address(usdc), 12_000 * 1e6, 2, 0, vault);
         vm.stopPrank();
 
         vm.prank(owner);
-        aavePool.setAssetPrice(address(weth), 1400 * 1e8); 
+        aavePool.setAssetPrice(address(weth), 1400 * 1e8);
 
         (,,,,, uint256 hf) = aavePool.getUserAccountData(vault);
         console.log("Health Factor after price drop:", hf);
@@ -325,13 +325,7 @@ contract MockAavePoolTest is Test {
 
         uint256 collateralBefore = aavePool.getUserCollateral(vault, address(weth));
 
-        aavePool.liquidationCall(
-            address(weth),
-            address(usdc),
-            vault,
-            7_000 * 1e6, 
-            false
-        );
+        aavePool.liquidationCall(address(weth), address(usdc), vault, 7_000 * 1e6, false);
 
         uint256 collateralAfter = aavePool.getUserCollateral(vault, address(weth));
         uint256 debtAfter = aavePool.getUserDebt(vault, address(usdc));
@@ -352,7 +346,7 @@ contract MockAavePoolTest is Test {
         vm.startPrank(vault);
         weth.approve(address(aavePool), 10 ether);
         aavePool.supply(address(weth), 10 ether, vault, 0);
-        aavePool.borrow(address(usdc), 5_000 * 1e6, 2, 0, vault); 
+        aavePool.borrow(address(usdc), 5_000 * 1e6, 2, 0, vault);
         vm.stopPrank();
 
         vm.startPrank(liquidator);

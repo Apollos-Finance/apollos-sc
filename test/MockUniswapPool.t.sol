@@ -55,7 +55,7 @@ contract MockUniswapPoolTest is Test {
         poolKey = PoolKey({
             currency0: Currency.wrap(token0),
             currency1: Currency.wrap(token1),
-            fee: 3000, 
+            fee: 3000,
             tickSpacing: 60,
             hooks: IHooks(address(lvrHook))
         });
@@ -168,13 +168,7 @@ contract MockUniswapPoolTest is Test {
 
         uint256 balanceBefore = IERC20(token1).balanceOf(user);
 
-        (uint256 amountIn, uint256 amountOut) =
-            pool.swap(
-                poolKey,
-                true, 
-                -10 ether, 
-                0 
-            );
+        (uint256 amountIn, uint256 amountOut) = pool.swap(poolKey, true, -10 ether, 0);
 
         uint256 balanceAfter = IERC20(token1).balanceOf(user);
 
@@ -199,7 +193,7 @@ contract MockUniswapPoolTest is Test {
         vm.stopPrank();
 
         vm.prank(owner);
-        lvrHook.setDynamicFee(poolId, 100000); 
+        lvrHook.setDynamicFee(poolId, 100000);
 
         vm.startPrank(user);
         address token0 = Currency.unwrap(poolKey.currency0);
@@ -217,7 +211,7 @@ contract MockUniswapPoolTest is Test {
      */
     function test_MinFeeDefault() public view {
         uint24 fee = lvrHook.getDynamicFee(poolId);
-        assertEq(fee, 500); 
+        assertEq(fee, 500);
     }
 
     /**

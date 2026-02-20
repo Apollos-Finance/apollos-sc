@@ -42,10 +42,10 @@ contract MockAavePool is IMockAavePool, Ownable, ReentrancyGuard {
      */
     struct ReserveConfig {
         bool isActive;
-        uint256 ltv; 
-        uint256 liquidationThreshold; 
-        uint256 liquidationBonus; 
-        uint256 decimals; 
+        uint256 ltv;
+        uint256 liquidationThreshold;
+        uint256 liquidationBonus;
+        uint256 decimals;
     }
 
     /// @notice Maps asset address to its reserve configuration
@@ -83,15 +83,15 @@ contract MockAavePool is IMockAavePool, Ownable, ReentrancyGuard {
 
     /// @notice Emitted when a borrower's whitelist status is updated
     event BorrowerWhitelisted(address indexed borrower, bool status);
-    
+
     /// @notice Emitted when a credit limit is set for a borrower
     event CreditLimitSet(address indexed borrower, address indexed asset, uint256 limit);
-    
+
     /// @notice Emitted when a credit delegation is modified
     event CreditDelegationUpdated(
         address indexed delegator, address indexed borrower, address indexed asset, uint256 oldAmount, uint256 newAmount
     );
-    
+
     /// @notice Emitted when virtual collateral for a borrower is updated
     event VirtualCollateralUpdated(address indexed borrower, uint256 amount);
 
@@ -347,7 +347,7 @@ contract MockAavePool is IMockAavePool, Ownable, ReentrancyGuard {
             uint256 maxBorrowPower = (totalCollateralBase * ltv) / BPS;
 
             if (totalDebtBase > maxBorrowPower) {
-                availableBorrowsBase = 0; 
+                availableBorrowsBase = 0;
             } else {
                 availableBorrowsBase = maxBorrowPower - totalDebtBase;
             }
@@ -365,7 +365,7 @@ contract MockAavePool is IMockAavePool, Ownable, ReentrancyGuard {
         return ReserveData({
             aTokenAddress: address(0),
             variableDebtTokenAddress: address(0),
-            liquidityRate: 0, 
+            liquidityRate: 0,
             variableBorrowRate: 0,
             liquidityIndex: 1e27,
             variableBorrowIndex: 1e27
