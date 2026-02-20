@@ -83,4 +83,4 @@ forge script script/DeploySourceChain.s.sol:DeploySourceChain --rpc-url <BASE_RP
 This project is licensed under the MIT License.
 
 ---
-*Built with ❤️.*
+*Built with 🔥 to make DeFi smarter, safer, and human-readable.*
