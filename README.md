@@ -39,7 +39,7 @@ The protocol employs a custom **LVRHook** that injects dynamic swap fees into Un
 ### Installation
 ```bash
 # Clone the repository
-git clone https://github.com/your-username/ApollosFinance.git
+git clone https://github.com/Apollos-Finance/apollos-sc.git
 cd apollos-sc
 
 # Install dependencies
