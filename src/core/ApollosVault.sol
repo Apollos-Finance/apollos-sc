@@ -39,6 +39,9 @@ contract ApollosVault is IApollosVault, ERC4626, Ownable, ReentrancyGuard {
     /// @notice Safety cap for the idle withdrawal buffer (30%).
     uint256 public constant MAX_IDLE_BUFFER_BPS = 3000;
 
+    /// @notice Upper health factor band used to trigger releverage (scaled by 1e18).
+    uint256 public constant HF_UPPER_BAND = 2.2e18;
+
     /// @notice The stable asset borrowed to create leverage (e.g., USDC).
     IERC20 public immutable quoteAsset;
 
@@ -166,7 +169,7 @@ contract ApollosVault is IApollosVault, ERC4626, Ownable, ReentrancyGuard {
             quoteAsset: _quoteAsset,
             targetLeverage: _targetLeverage,
             maxLeverage: _maxLeverage,
-            rebalanceThreshold: 1.1e18
+            rebalanceThreshold: 1.8e18
         });
 
         protocolFee = 100; // 1%
@@ -351,6 +354,7 @@ contract ApollosVault is IApollosVault, ERC4626, Ownable, ReentrancyGuard {
         _syncOracleCheckpoint();
 
         uint256 oldLeverage = _safeGetCurrentLeverage();
+        uint256 effectiveHF = _getEffectiveHealthFactor();
         bool didAction;
         uint256 debtRepaid;
 
@@ -373,8 +377,38 @@ contract ApollosVault is IApollosVault, ERC4626, Ownable, ReentrancyGuard {
             }
         }
 
-        // Deleverage if risk threshold is breached.
-        if (needsRebalance()) {
+        // If HF is too high (underleveraged), releverage by recycling a small LP slice when idle is unavailable.
+        if (effectiveHF > HF_UPPER_BAND && effectiveHF != type(uint256).max && !didAction && lpTokenBalance > 0) {
+            uint256 lpToRecycle = lpTokenBalance / 20; // 5% LP recycle for incremental releverage.
+            if (lpToRecycle == 0) lpToRecycle = lpTokenBalance;
+
+            if (lpToRecycle > 0 && lpToRecycle <= lpTokenBalance) {
+                (uint256 amount0Received, uint256 amount1Received) = _removeLiquidity(lpToRecycle);
+                lpTokenBalance -= lpToRecycle;
+
+                address currency0 = Currency.unwrap(poolKey.currency0);
+                uint256 baseReceived = currency0 == address(asset()) ? amount0Received : amount1Received;
+                uint256 quoteReceived = currency0 == address(asset()) ? amount1Received : amount0Received;
+
+                if (baseReceived > 0) {
+                    uint256 targetQuoteForBase = _calculateBorrowAmount(baseReceived);
+                    uint256 extraBorrow = targetQuoteForBase > quoteReceived ? targetQuoteForBase - quoteReceived : 0;
+
+                    if (extraBorrow > 0) {
+                        quoteAsset.safeIncreaseAllowance(address(aavePool), extraBorrow);
+                        aavePool.borrow(address(quoteAsset), extraBorrow, 2, 0, address(this));
+                    }
+
+                    uint256 quoteToAdd = quoteReceived + extraBorrow;
+                    uint256 lpReceived = _addLiquidity(baseReceived, quoteToAdd);
+                    lpTokenBalance += lpReceived;
+                    didAction = true;
+                }
+            }
+        }
+
+        // Deleverage if HF is below configured lower band.
+        if (effectiveHF < config.rebalanceThreshold && effectiveHF != type(uint256).max) {
             uint256 lpToRemove = _calculateRebalanceAmount();
             if (lpToRemove > 0 && lpToRemove <= lpTokenBalance) {
                 (uint256 amount0Received, uint256 amount1Received) = _removeLiquidity(lpToRemove);
@@ -452,8 +486,13 @@ contract ApollosVault is IApollosVault, ERC4626, Ownable, ReentrancyGuard {
      * @notice Returns the current Aave health factor.
      */
     function getHealthFactor() public view override returns (uint256 healthFactor) {
-        (,,,,, healthFactor) = aavePool.getUserAccountData(address(this));
-        if (healthFactor == 0) healthFactor = type(uint256).max;
+        (,,,,, uint256 aaveHealthFactor) = aavePool.getUserAccountData(address(this));
+        if (aaveHealthFactor > 0 && aaveHealthFactor != type(uint256).max) {
+            return aaveHealthFactor;
+        }
+
+        // Credit-delegation mode can report zero/INF despite active debt; use leverage-derived HF.
+        return _getEffectiveHealthFactor();
     }
 
     /**
@@ -462,17 +501,19 @@ contract ApollosVault is IApollosVault, ERC4626, Ownable, ReentrancyGuard {
     function getCurrentLeverage() public view override returns (uint256 leverage) {
         uint256 totalDebt = _getTotalDebt();
         uint256 assets = totalAssets();
+        uint256 debtInBase = _convertQuoteToBase(totalDebt);
 
         if (assets == 0) return PRECISION;
-        leverage = ((assets + totalDebt) * PRECISION) / assets;
+        leverage = ((assets + debtInBase) * PRECISION) / assets;
     }
 
     /**
      * @notice Checks if the vault requires a rebalance.
      */
     function needsRebalance() public view override returns (bool needed) {
-        uint256 hf = getHealthFactor();
-        return hf < config.rebalanceThreshold && hf != type(uint256).max;
+        uint256 hf = _getEffectiveHealthFactor();
+        if (hf == type(uint256).max) return false;
+        return hf < config.rebalanceThreshold || hf > HF_UPPER_BAND;
     }
 
     /**
@@ -676,6 +717,20 @@ contract ApollosVault is IApollosVault, ERC4626, Ownable, ReentrancyGuard {
         } catch {
             return PRECISION;
         }
+    }
+
+    /**
+     * @dev Returns a leverage-derived effective health factor.
+     *      HF = L / (L - 1), where L is leverage in 1e18 precision.
+     */
+    function _getEffectiveHealthFactor() internal view returns (uint256 hf) {
+        uint256 leverage = _safeGetCurrentLeverage();
+        if (leverage <= PRECISION) return type(uint256).max;
+
+        uint256 denominator = leverage - PRECISION;
+        if (denominator == 0) return type(uint256).max;
+
+        hf = (leverage * PRECISION) / denominator;
     }
 
     /**
