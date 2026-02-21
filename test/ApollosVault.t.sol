@@ -392,6 +392,42 @@ contract ApollosVaultTest is Test {
     }
 
     /**
+     * @notice Verifies only rebalancer/owner can toggle borrow pause.
+     */
+    function test_SetBorrowPaused_OnlyRebalancer() public {
+        vm.startPrank(alice);
+        vm.expectRevert(IApollosVault.NotAuthorized.selector);
+        vault.setBorrowPaused(true);
+        vm.stopPrank();
+
+        vm.startPrank(rebalancer);
+        vault.setBorrowPaused(true);
+        vm.stopPrank();
+
+        assertTrue(vault.borrowPaused(), "borrow pause should be enabled by rebalancer");
+    }
+
+    /**
+     * @notice Verifies deposits still work while borrow is paused, without increasing debt.
+     */
+    function test_SetBorrowPaused_DepositWithoutBorrow() public {
+        vault.setBorrowPaused(true);
+
+        uint256 debtBefore = aavePool.getUserDebt(address(vault), address(usdc));
+        uint256 depositAmount = 10 ether;
+
+        vm.startPrank(alice);
+        weth.approve(address(vault), depositAmount);
+        uint256 shares = vault.deposit(depositAmount, alice);
+        vm.stopPrank();
+
+        uint256 debtAfter = aavePool.getUserDebt(address(vault), address(usdc));
+
+        assertGt(shares, 0, "deposit should still mint shares");
+        assertEq(debtAfter, debtBefore, "debt must not increase when borrow is paused");
+    }
+
+    /**
      * @notice Verifies basic emergency withdrawal functionality.
      */
     function test_EmergencyWithdraw() public {

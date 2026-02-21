@@ -71,6 +71,11 @@ interface IApollosVault {
      */
     event HarvestFees(uint256 tradingFees, uint256 protocolFee, uint256 timestamp);
 
+    /**
+     * @notice Emitted when borrow circuit breaker status changes.
+     */
+    event BorrowPauseUpdated(bool oldPaused, bool newPaused, address indexed updatedBy);
+
     /// @notice Thrown when a zero amount is provided for a financial operation.
     error ZeroAmount();
 
@@ -94,6 +99,9 @@ interface IApollosVault {
 
     /// @notice Thrown when an operation is attempted while the vault is paused.
     error VaultPaused();
+
+    /// @notice Thrown when borrowing is paused by the circuit breaker.
+    error BorrowPaused();
 
     /// @notice Thrown when the received value is below the user's defined tolerance.
     error SlippageExceeded();
@@ -228,6 +236,11 @@ interface IApollosVault {
      * @notice Enables or disables vault operations.
      */
     function setPaused(bool paused) external;
+
+    /**
+     * @notice Enables or disables borrowing while keeping deleverage/repay paths active.
+     */
+    function setBorrowPaused(bool paused) external;
 
     /**
      * @notice Grants or revokes rebalancing authority to a specific address.

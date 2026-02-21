@@ -60,6 +60,9 @@ contract ApollosVault is IApollosVault, ERC4626, Ownable, ReentrancyGuard {
     /// @notice Pause status of the vault.
     bool public paused;
 
+    /// @notice Borrow circuit breaker status.
+    bool public borrowPaused;
+
     /// @notice Maps rebalancer addresses to their authorization status.
     mapping(address => bool) public authorizedRebalancers;
 
@@ -268,13 +271,16 @@ contract ApollosVault is IApollosVault, ERC4626, Ownable, ReentrancyGuard {
         IERC20(asset()).safeTransferFrom(msg.sender, address(this), amount);
 
         // Immediate deploy mode: borrow quote and add leveraged LP instantly.
-        uint256 borrowAmount = _calculateBorrowAmount(amount);
-        if (borrowAmount > 0) {
-            quoteAsset.safeIncreaseAllowance(address(aavePool), borrowAmount);
-            aavePool.borrow(address(quoteAsset), borrowAmount, 2, 0, address(this));
+        uint256 borrowAmount;
+        if (!borrowPaused) {
+            borrowAmount = _calculateBorrowAmount(amount);
+            if (borrowAmount > 0) {
+                quoteAsset.safeIncreaseAllowance(address(aavePool), borrowAmount);
+                aavePool.borrow(address(quoteAsset), borrowAmount, 2, 0, address(this));
 
-            uint256 lpReceived = _addLiquidity(amount, borrowAmount);
-            lpTokenBalance += lpReceived;
+                uint256 lpReceived = _addLiquidity(amount, borrowAmount);
+                lpTokenBalance += lpReceived;
+            }
         }
 
         _mint(receiver, shares);
@@ -363,7 +369,7 @@ contract ApollosVault is IApollosVault, ERC4626, Ownable, ReentrancyGuard {
         uint256 targetIdle = (idleBalance * idleBufferBps) / BPS;
 
         // Deploy excess idle above configured withdrawal buffer.
-        if (idleBalance > targetIdle) {
+        if (!borrowPaused && idleBalance > targetIdle) {
             uint256 deployAmount = idleBalance - targetIdle;
             uint256 borrowAmount = _calculateBorrowAmount(deployAmount);
 
@@ -378,7 +384,10 @@ contract ApollosVault is IApollosVault, ERC4626, Ownable, ReentrancyGuard {
         }
 
         // If HF is too high (underleveraged), releverage by recycling a small LP slice when idle is unavailable.
-        if (effectiveHF > HF_UPPER_BAND && effectiveHF != type(uint256).max && !didAction && lpTokenBalance > 0) {
+        if (
+            !borrowPaused && effectiveHF > HF_UPPER_BAND && effectiveHF != type(uint256).max && !didAction
+                && lpTokenBalance > 0
+        ) {
             uint256 lpToRecycle = lpTokenBalance / 20; // 5% LP recycle for incremental releverage.
             if (lpToRecycle == 0) lpToRecycle = lpTokenBalance;
 
@@ -562,6 +571,16 @@ contract ApollosVault is IApollosVault, ERC4626, Ownable, ReentrancyGuard {
      */
     function setPaused(bool _paused) external override onlyOwner {
         paused = _paused;
+    }
+
+    /**
+     * @notice Toggles the borrow circuit breaker.
+     */
+    function setBorrowPaused(bool _paused) external override onlyRebalancer {
+        if (borrowPaused == _paused) return;
+        bool oldPaused = borrowPaused;
+        borrowPaused = _paused;
+        emit BorrowPauseUpdated(oldPaused, _paused, msg.sender);
     }
 
     /**
