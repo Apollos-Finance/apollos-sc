@@ -58,9 +58,9 @@ contract DeployAll is Script {
     bytes32 constant WETH_NAV = keccak256("WETH_NAV");
     bytes32 constant WBTC_NAV = keccak256("WBTC_NAV");
     bytes32 constant LINK_NAV = keccak256("LINK_NAV");
-    bytes32 constant WETH_VAR  = keccak256("APOLLOS_VAR_WETH");
-    bytes32 constant WBTC_VAR  = keccak256("APOLLOS_VAR_WBTC");
-    bytes32 constant LINK_VAR  = keccak256("APOLLOS_VAR_LINK");
+    bytes32 constant WETH_VAR = keccak256("APOLLOS_VAR_WETH");
+    bytes32 constant WBTC_VAR = keccak256("APOLLOS_VAR_WBTC");
+    bytes32 constant LINK_VAR = keccak256("APOLLOS_VAR_LINK");
 
     /**
      * @notice Entry point for the deployment script.
@@ -168,7 +168,7 @@ contract DeployAll is Script {
         dataFeedsCache.configureFeed(WETH_NAV, 18);
         dataFeedsCache.configureFeed(WBTC_NAV, 8);
         dataFeedsCache.configureFeed(LINK_NAV, 18);
-        dataFeedsCache.configureFeed(WETH_VAR, 0);   
+        dataFeedsCache.configureFeed(WETH_VAR, 0);
         dataFeedsCache.configureFeed(WBTC_VAR, 0);
         dataFeedsCache.configureFeed(LINK_VAR, 0);
         console.log("Data feed ids configured: WETH_NAV, WBTC_NAV, LINK_NAV, WETH_VAR, WBTC_VAR, LINK_VAR");

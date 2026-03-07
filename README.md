@@ -1,86 +1,80 @@
-# Apollos Finance Smart Contracts 🚀
+# Apollos Finance Smart Contracts
 
-Apollos Finance is a next-generation, cross-chain leveraged yield protocol built on **Arbitrum Sepolia** and **Base Sepolia**. It enables users to access sophisticated 2x leverage strategies with a single click, regardless of their source chain, while providing advanced protection against Loss-Versus-Rebalancing (LVR) using Uniswap V4 Hooks.
+Apollos Finance is a cross-chain leveraged yield system on Arbitrum Sepolia and Base Sepolia.
 
-## 🌟 Key Innovations
+This repository contains the protocol contracts, mock infrastructure, deployment scripts, and test suite used by the frontend, backend workers, and CRE workflows.
 
-### 1. Store-and-Execute CCIP Pattern
-To bypass the strict gas limits of cross-chain message delivery, Apollos utilizes a **Store-and-Execute** architecture. Incoming bridge intents are securely stored on the destination chain, allowing users to execute heavy DeFi logic (swapping and vault depositing) in a secondary, local transaction. This ensures 100% reliability for complex multi-step strategies.
+## Key Components
 
-### 2. Hybrid ERC4626 Vaults
-Our vaults implement a **Dual-Valuation System**:
-- **Production Path:** High-efficiency Net Asset Value (NAV) updates calculated off-chain via **Chainlink Workflows** and cached on-chain.
-- **Fallback Path:** Real-time on-chain math valuation that automatically kicks in if the off-chain feed becomes stale, ensuring the vault is always solvable.
+### 1. Vault and Strategy Layer
+- `ApollosVault.sol`: ERC4626 vault with leverage management and rebalance hooks.
+- `ApollosFactory.sol`: Deploys and registers vault markets.
+- `ApollosRouter.sol`: User-facing local deposit/withdraw entry point.
 
-### 3. LVR Protection via Uniswap V4 Hooks
-The protocol employs a custom **LVRHook** that injects dynamic swap fees into Uniswap V4 pools. By analyzing market volatility off-chain using Gemini AI and committing risk scores via Chainlink, the protocol protects liquidity providers from toxic flow during high-volatility events.
+### 2. Market and Risk Layer
+- `LVRHook.sol`: Dynamic fee hook for Uniswap V4-style swap protection.
+- `DataFeedsCache.sol`: Onchain cache for NAV and VaR updates published by workflows.
+- `GenericWorkflowReceiver.sol`: Generic receiver for CRE reports with target/selector allowlists.
 
----
+### 3. Cross-Chain Layer
+- `ApollosCCIPReceiver.sol`: Destination-chain receiver for bridge and zap flow.
+- `SourceChainRouter.sol`: Source-chain bridge router.
 
-## 🏗️ Technical Architecture
+### 4. Simulation Mocks
+- `MockAavePool.sol`
+- `MockUniswapPool.sol`
+- `MockToken.sol`
 
-### Core Contracts (`src/core/`)
-- **`ApollosVault.sol`**: The heart of the protocol. An ERC4626 compliant vault that manages Aave credit delegation and Uniswap V4 LP positions.
-- **`ApollosCCIPReceiver.sol`**: Manages cross-chain message reception and the Auto-Zap "Reserve Swap" mechanism.
-- **`ApollosRouter.sol`**: The unified entry point for local deposits, withdrawals, and native ETH wrapping.
-- **`LVRHook.sol`**: A Uniswap V4 hook providing dynamic fee adjustments and vault whitelisting.
-- **`ApollosFactory.sol`**: The permissioned registry and deployment engine for new strategy vaults.
-- **`SourceChainRouter.sol`**: A lightweight bridge-only gateway deployed on source chains like Base.
+## Contract Architecture (`src/core`)
 
-### Simulation Infrastructure (`src/mocks/`)
-- **`MockAavePool.sol`**: Simulates Aave V3 lending with full Credit Delegation support.
-- **`MockUniswapPool.sol`**: A hybrid Uniswap V4 simulation that uses official V4 types while providing a simplified AMM for strategy testing.
-- **`MockToken.sol`**: Feature-rich mock tokens with built-in faucets and WETH-style wrapping.
+- `ApollosVault.sol`
+- `ApollosFactory.sol`
+- `ApollosRouter.sol`
+- `ApollosCCIPReceiver.sol`
+- `SourceChainRouter.sol`
+- `LVRHook.sol`
+- `DataFeedsCache.sol`
+- `GenericWorkflowReceiver.sol`
 
----
+## Deployment
 
-## 🚀 Getting Started
-
-### Installation
-```bash
-# Clone the repository
-git clone https://github.com/Apollos-Finance/apollos-sc.git
-cd apollos-sc
-
-# Install dependencies
-forge install
-```
-
-### Testing
-Apollos features a comprehensive test suite covering strategy logic, cross-chain state transitions, and edge-case reverts.
-```bash
-# Run all tests
-forge test
-
-# Run tests with detailed logs
-forge test -vvv
-```
-
-### Deployment
-Deployment is split into two phases: the Main Hub (Arbitrum) and the Source Gateways (Base).
-
-**1. Deploy to Arbitrum Sepolia (Hub):**
+### 1. Deploy Arbitrum Hub
 ```bash
 forge script script/DeployAll.s.sol:DeployAll --rpc-url <ARB_RPC> --private-key <PK> --broadcast
 ```
 
-**2. Deploy to Base Sepolia (Gateway):**
+### 2. Deploy Base Source Router
 ```bash
 forge script script/DeploySourceChain.s.sol:DeploySourceChain --rpc-url <BASE_RPC> --private-key <PK> --broadcast
 ```
 
----
+### 3. Workflow Permission Setup (Generic Receiver)
 
-## 🛠️ Technology Stack
-- **Smart Contracts:** Solidity 0.8.20+
-- **Framework:** Foundry
-- **Interoperability:** Chainlink CCIP
-- **Computation:** Chainlink Workflows (off-chain NAV/LVR)
-- **AMM:** Uniswap V4 (Hooks)
-- **Lending:** Aave V3 (Credit Delegation)
+`DeployAll.s.sol` configures vault/datafeed keepers and rebalancer permissions, but it does not fully configure GenericWorkflowReceiver routes.
 
-## 📄 License
-This project is licensed under the MIT License.
+After deploying `GenericWorkflowReceiver`, run owner-level permission setup for:
+- Allowed targets (`setAllowedTarget`)
+- Allowed selectors (`setAllowedRoute`)
+- Target-side authorization (`setKeeper`, `setRebalancer`, `setWorkflowAuthorizer`)
 
----
-*Built with 🔥 to make DeFi smarter, safer, and human-readable.*
+This step is required for CRE writeReport execution through GenericWorkflowReceiver.
+
+## Testing
+
+```bash
+forge test
+forge test -vvv
+```
+
+## Technology Stack
+
+- Solidity 0.8.20+
+- Foundry
+- Chainlink CCIP
+- Chainlink CRE-compatible report receiver pattern
+- Uniswap V4 hook-compatible architecture
+- Aave-style credit delegation mock model
+
+## License
+
+MIT
